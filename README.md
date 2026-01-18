@@ -5,7 +5,7 @@ MCP server that gives Claude Code (or any MCP client) read-only access to your W
 ## Quick Install
 
 ```bash
-npx @anthropic/warm-mcp-server
+npx @warm/mcp
 ```
 
 Works on macOS, Linux, and Windows. Auto-configures: Claude Code, Cursor, Windsurf, Claude Desktop, OpenCode, Codex CLI, Antigravity, Gemini CLI.
@@ -15,7 +15,7 @@ Works on macOS, Linux, and Windows. Auto-configures: Claude Code, Cursor, Windsu
 ### Claude Code (easiest)
 
 ```bash
-claude mcp add --scope user --env WARM_API_KEY=your-key warm -- npx -y @anthropic/warm-mcp-server
+claude mcp add --scope user --env WARM_API_KEY=your-key warm -- npx -y @warm/mcp
 ```
 
 ### Other Tools
@@ -40,7 +40,7 @@ Add to your tool's MCP config file:
   "mcpServers": {
     "warm": {
       "command": "npx",
-      "args": ["-y", "@anthropic/warm-mcp-server"],
+      "args": ["-y", "@warm/mcp"],
       "env": { "WARM_API_KEY": "your-api-key" }
     }
   }
@@ -52,7 +52,7 @@ Add to your tool's MCP config file:
 ```toml
 [mcp_servers.warm]
 command = "npx"
-args = ["-y", "@anthropic/warm-mcp-server"]
+args = ["-y", "@warm/mcp"]
 
 [mcp_servers.warm.env]
 WARM_API_KEY = "your-api-key"
