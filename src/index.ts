@@ -33,7 +33,7 @@ function getApiKey(): string | null {
 async function apiRequest(endpoint: string, params: Record<string, string> = {}): Promise<unknown> {
   const apiKey = getApiKey();
   if (!apiKey) {
-    throw new Error('WARM_API_KEY not set. Run: curl -fsSL https://warm.io/install | bash');
+    throw new Error('WARM_API_KEY not set. Add your API key from https://warm.io/settings');
   }
 
   const url = new URL(endpoint, API_URL);
