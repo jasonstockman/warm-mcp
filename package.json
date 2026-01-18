@@ -1,0 +1,32 @@
+{
+  "name": "@anthropic/warm-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for Warm Financial API",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "warm-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "warm",
+    "financial",
+    "api",
+    "claude"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  }
+}
