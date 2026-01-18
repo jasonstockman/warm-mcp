@@ -5,10 +5,10 @@ MCP server that gives Claude Code (or any MCP client) read-only access to your W
 ## Quick Install
 
 ```bash
-curl -fsSL https://warm.io/install | bash
+npx @anthropic/warm-mcp-server
 ```
 
-Auto-configures: Claude Code, Cursor, Windsurf, Claude Desktop, OpenCode, Codex CLI, Antigravity, Gemini CLI.
+Works on macOS, Linux, and Windows. Auto-configures: Claude Code, Cursor, Windsurf, Claude Desktop, OpenCode, Codex CLI, Antigravity, Gemini CLI.
 
 ## Manual Installation
 
