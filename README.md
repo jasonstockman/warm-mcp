@@ -22,18 +22,19 @@ claude mcp add --scope user --env WARM_API_KEY=your-key warm -- npx -y @anthropi
 
 Add to your tool's MCP config file:
 
-| Tool | Config Path | Format |
-|------|-------------|--------|
-| Claude Code | `~/.claude.json` | JSON |
-| Cursor | `~/.cursor/mcp.json` | JSON |
-| Windsurf | `~/.codeium/windsurf/mcp_config.json` | JSON |
-| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` | JSON |
-| OpenCode | `~/.config/opencode/opencode.json` | JSON |
-| Codex CLI | `~/.codex/config.toml` | TOML |
-| Antigravity | `~/.gemini/antigravity/mcp_config.json` | JSON |
-| Gemini CLI | `~/.gemini/settings.json` | JSON |
+| Tool           | Config Path                                                       | Format |
+| -------------- | ----------------------------------------------------------------- | ------ |
+| Claude Code    | `~/.claude.json`                                                  | JSON   |
+| Cursor         | `~/.cursor/mcp.json`                                              | JSON   |
+| Windsurf       | `~/.codeium/windsurf/mcp_config.json`                             | JSON   |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` | JSON   |
+| OpenCode       | `~/.config/opencode/opencode.json`                                | JSON   |
+| Codex CLI      | `~/.codex/config.toml`                                            | TOML   |
+| Antigravity    | `~/.gemini/antigravity/mcp_config.json`                           | JSON   |
+| Gemini CLI     | `~/.gemini/settings.json`                                         | JSON   |
 
 **JSON format** (most tools):
+
 ```json
 {
   "mcpServers": {
@@ -47,6 +48,7 @@ Add to your tool's MCP config file:
 ```
 
 **TOML format** (Codex CLI):
+
 ```toml
 [mcp_servers.warm]
 command = "npx"
@@ -66,13 +68,13 @@ Get your API key from [warm.io/settings](https://warm.io/settings) → API Keys.
 
 ## Available Tools
 
-| Tool | Description |
-|------|-------------|
-| `get_accounts` | List all connected bank accounts with balances |
-| `get_transactions` | Get transactions with date/limit filters |
-| `get_recurring` | Show subscriptions and recurring payments |
-| `get_snapshots` | Net worth history (daily or monthly) |
-| `verify_key` | Check if API key is valid |
+| Tool               | Description                                    |
+| ------------------ | ---------------------------------------------- |
+| `get_accounts`     | List all connected bank accounts with balances |
+| `get_transactions` | Get transactions with date/limit filters       |
+| `get_recurring`    | Show subscriptions and recurring payments      |
+| `get_snapshots`    | Net worth history (daily or monthly)           |
+| `verify_key`       | Check if API key is valid                      |
 
 ## Usage
 
@@ -87,10 +89,10 @@ Claude will automatically use the MCP tools to query your data.
 
 ## Configuration
 
-| Environment Variable | Description | Default |
-|---------------------|-------------|---------|
-| `WARM_API_KEY` | Your Warm API key (required) | — |
-| `WARM_API_URL` | API base URL | `https://warm.io` |
+| Environment Variable | Description                  | Default           |
+| -------------------- | ---------------------------- | ----------------- |
+| `WARM_API_KEY`       | Your Warm API key (required) | —                 |
+| `WARM_API_URL`       | API base URL                 | `https://warm.io` |
 
 ## Security
 
