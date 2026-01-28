@@ -1,0 +1,202 @@
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { join, dirname, resolve } from 'path';
+import { homedir, platform } from 'os';
+import { createInterface } from 'readline';
+
+const HOME = homedir();
+const CWD = process.cwd();
+
+interface Client {
+  name: string;
+  configPath: string;
+  format: 'json' | 'toml';
+  alwaysInclude?: boolean;
+  isProjectLevel?: boolean;
+}
+
+function getClaudeDesktopPath(): string {
+  if (platform() === 'win32') {
+    return join(
+      process.env.APPDATA || join(HOME, 'AppData', 'Roaming'),
+      'Claude',
+      'claude_desktop_config.json'
+    );
+  }
+  if (platform() === 'darwin') {
+    return join(HOME, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
+  }
+  return join(HOME, '.config', 'claude', 'claude_desktop_config.json');
+}
+
+const GLOBAL_CLIENTS: Client[] = [
+  { name: 'Claude Code', configPath: join(HOME, '.claude.json'), format: 'json', alwaysInclude: true },
+  { name: 'Claude Desktop', configPath: getClaudeDesktopPath(), format: 'json' },
+  { name: 'Cursor', configPath: join(HOME, '.cursor', 'mcp.json'), format: 'json' },
+  { name: 'Windsurf', configPath: join(HOME, '.codeium', 'windsurf', 'mcp_config.json'), format: 'json' },
+  { name: 'OpenCode', configPath: join(HOME, '.config', 'opencode', 'opencode.json'), format: 'json' },
+  { name: 'Codex CLI', configPath: join(HOME, '.codex', 'config.toml'), format: 'toml' },
+  { name: 'Antigravity', configPath: join(HOME, '.gemini', 'antigravity', 'mcp_config.json'), format: 'json' },
+  { name: 'Gemini CLI', configPath: join(HOME, '.gemini', 'settings.json'), format: 'json' },
+];
+
+// Project-level MCP config files (checked in CWD)
+const PROJECT_CONFIGS = ['.mcp.json', '.cursor/mcp.json', '.vscode/mcp.json'];
+
+// On Windows, npx doesn't forward stdin/stdout properly for MCP's JSON-RPC protocol.
+// Using cmd /c npx ... fixes the pipe forwarding.
+const MCP_CONFIG =
+  platform() === 'win32'
+    ? { command: 'cmd', args: ['/c', 'npx', '-y', '@warmio/mcp', '--server'] }
+    : { command: 'npx', args: ['-y', '@warmio/mcp', '--server'] };
+
+function detectProjectClients(): Client[] {
+  const found: Client[] = [];
+  for (const name of PROJECT_CONFIGS) {
+    const configPath = resolve(CWD, name);
+    if (existsSync(configPath)) {
+      found.push({
+        name: `Project (${name})`,
+        configPath,
+        format: 'json',
+        isProjectLevel: true,
+      });
+    }
+  }
+  return found;
+}
+
+function isDetected(client: Client): boolean {
+  if (client.alwaysInclude) return true;
+  return existsSync(dirname(client.configPath));
+}
+
+function isConfigured(client: Client): boolean {
+  if (!existsSync(client.configPath)) return false;
+  try {
+    const content = readFileSync(client.configPath, 'utf-8');
+    if (client.format === 'toml') return content.includes('[mcp_servers.warm]');
+    return !!JSON.parse(content)?.mcpServers?.warm;
+  } catch {
+    return false;
+  }
+}
+
+function configureJson(client: Client, apiKey: string): void {
+  let config: Record<string, unknown> = {};
+  if (existsSync(client.configPath)) {
+    try {
+      config = JSON.parse(readFileSync(client.configPath, 'utf-8'));
+    } catch { /* start fresh */ }
+  }
+
+  if (!config.mcpServers) config.mcpServers = {};
+  const servers = config.mcpServers as Record<string, unknown>;
+  const existing = servers.warm as Record<string, unknown> | undefined;
+
+  // For project-level configs, preserve existing command/args if present — only inject the key.
+  if (client.isProjectLevel && existing?.command) {
+    existing.env = { WARM_API_KEY: apiKey };
+    servers.warm = existing;
+  } else {
+    servers.warm = { ...MCP_CONFIG, env: { WARM_API_KEY: apiKey } };
+  }
+
+  mkdirSync(dirname(client.configPath), { recursive: true });
+  writeFileSync(client.configPath, JSON.stringify(config, null, 2) + '\n');
+}
+
+function configureToml(client: Client, apiKey: string): void {
+  let content = '';
+  if (existsSync(client.configPath)) {
+    content = readFileSync(client.configPath, 'utf-8');
+    if (!content.endsWith('\n')) content += '\n';
+  }
+
+  const tomlCommand = platform() === 'win32' ? 'cmd' : 'npx';
+  const tomlArgs =
+    platform() === 'win32'
+      ? '["/c", "npx", "-y", "@warmio/mcp", "--server"]'
+      : '["-y", "@warmio/mcp", "--server"]';
+  content += `\n[mcp_servers.warm]\ncommand = "${tomlCommand}"\nargs = ${tomlArgs}\n\n[mcp_servers.warm.env]\nWARM_API_KEY = "${apiKey}"\n`;
+
+  mkdirSync(dirname(client.configPath), { recursive: true });
+  writeFileSync(client.configPath, content);
+}
+
+function configure(client: Client, apiKey: string): void {
+  if (client.format === 'json') configureJson(client, apiKey);
+  else configureToml(client, apiKey);
+}
+
+function shortPath(p: string): string {
+  return p.replace(HOME, '~').replace(CWD, '.');
+}
+
+function prompt(question: string): Promise<string> {
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
+export async function install(): Promise<void> {
+  const force = process.argv.includes('--force');
+
+  console.log('');
+  console.log('  Warm MCP Server Installer');
+  console.log('  -------------------------');
+  console.log('');
+
+  // Detect global + project-level clients
+  const globalClients = GLOBAL_CLIENTS.filter(isDetected);
+  const projectClients = detectProjectClients();
+  const allClients = [...globalClients, ...projectClients];
+  const needsSetup = allClients.filter((c) => !isConfigured(c) || force);
+
+  // Show all detected clients
+  console.log('  MCP clients found:');
+  allClients.forEach((client) => {
+    const configured = isConfigured(client);
+    const status = configured && !force ? 'configured' : 'not configured';
+    console.log(`    ${client.name.padEnd(22)} ${shortPath(client.configPath).padEnd(55)} ${status}`);
+  });
+  console.log('');
+
+  // Nothing to do
+  if (needsSetup.length === 0) {
+    console.log('  All clients already configured!');
+    console.log('  Run with --force to update the API key.');
+    console.log('');
+    return;
+  }
+
+  // Prompt for API key
+  const apiKey = await prompt('  Warm API key: ');
+  if (!apiKey) {
+    console.log('');
+    console.log('  No key provided. Get one at https://warm.io/settings');
+    console.log('');
+    return;
+  }
+
+  console.log('');
+  console.log('  Configuring...');
+  console.log('');
+
+  needsSetup.forEach((client) => {
+    try {
+      configure(client, apiKey);
+      console.log(`    ${client.name.padEnd(22)} done`);
+    } catch (err) {
+      console.log(`    ${client.name.padEnd(22)} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+  console.log('');
+  console.log('  All set! Restart your MCP clients and try:');
+  console.log('    "What\'s my net worth?"');
+  console.log('');
+}
