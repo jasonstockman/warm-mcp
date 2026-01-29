@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+export {};
+
 const args = process.argv.slice(2);
 
 if (args.includes('--server')) {
