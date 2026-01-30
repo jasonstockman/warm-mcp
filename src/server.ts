@@ -165,10 +165,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_recurring': {
-        const params: Record<string, string> = {};
-        if (args?.since) params.since = String(args.since);
-        const data = await apiRequest('/api/recurring', params);
-        return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+        const params: Record<string, string> = { limit: '1' };
+        if (args?.since) params.last_knowledge = String(args.since);
+        const response = (await apiRequest('/api/transactions', params)) as {
+          recurring?: Array<Record<string, unknown>>;
+        };
+        const recurring = response.recurring || [];
+        return { content: [{ type: 'text', text: JSON.stringify({ recurring }, null, 2) }] };
       }
 
       case 'get_snapshots': {
