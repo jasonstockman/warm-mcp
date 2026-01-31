@@ -13,12 +13,62 @@ import * as path from 'path';
 import * as os from 'os';
 
 const API_URL = process.env.WARM_API_URL || 'https://warm.io';
+const MAX_RESPONSE_SIZE = 50_000;
+
+interface Transaction {
+  id: string;
+  date: string;
+  amount: number;
+  merchant_name?: string;
+  name?: string;
+  category?: string;
+}
+
+interface CompactTransaction {
+  d: string; // date
+  a: number; // amount
+  m: string; // merchant
+  c: string | null; // category
+}
+
+function compactTransaction(t: Transaction): CompactTransaction {
+  return {
+    d: t.date,
+    a: t.amount,
+    m: t.merchant_name || t.name || 'Unknown',
+    c: t.category || null,
+  };
+}
+
+function matchesSearch(t: Transaction, search: string): boolean {
+  const s = search.toLowerCase();
+  const merchant = (t.merchant_name || t.name || '').toLowerCase();
+  const category = (t.category || '').toLowerCase();
+  return merchant.includes(s) || category.includes(s);
+}
+
+function inDateRange(t: Transaction, since?: string, until?: string): boolean {
+  if (since && t.date < since) return false;
+  if (until && t.date > until) return false;
+  return true;
+}
+
+function calculateSummary(transactions: CompactTransaction[]) {
+  if (transactions.length === 0) {
+    return { total: 0, count: 0, avg: 0 };
+  }
+  const total = transactions.reduce((sum, t) => sum + t.a, 0);
+  return {
+    total: Math.round(total * 100) / 100,
+    count: transactions.length,
+    avg: Math.round((total / transactions.length) * 100) / 100,
+  };
+}
 
 function getApiKey(): string | null {
   if (process.env.WARM_API_KEY) {
     return process.env.WARM_API_KEY;
   }
-
   const configPath = path.join(os.homedir(), '.config', 'warm', 'api_key');
   try {
     return fs.readFileSync(configPath, 'utf-8').trim();
@@ -57,88 +107,89 @@ async function apiRequest(endpoint: string, params: Record<string, string> = {})
   return response.json();
 }
 
-const server = new Server({ name: 'warm', version: '1.0.3' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'warm', version: '1.2.0' }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'get_accounts',
       description:
-        'Get all connected bank accounts with balances. Returns account names, types, balances, and institutions.',
+        'Get all connected bank accounts with balances. Use for: "What accounts do I have?", "What is my checking balance?", "Show my credit cards". Returns: array of {name, type, balance, institution}.',
       inputSchema: {
         type: 'object' as const,
-        properties: {
-          since: {
-            type: 'string',
-            description: 'Filter accounts updated since this date (ISO format)',
-          },
-        },
+        properties: {},
       },
+      annotations: { readOnlyHint: true },
     },
     {
       name: 'get_transactions',
       description:
-        'Get transactions from connected accounts. Supports pagination and date filtering.',
+        'Search and analyze transactions. Use for: "How much did I spend on X?", "Show my Amazon purchases", "What did I buy last month?". Returns: {summary: {total, count, avg}, txns: [{d, a, m, c}]} where d=date, a=amount, m=merchant, c=category.',
       inputSchema: {
         type: 'object' as const,
         properties: {
-          limit: {
-            type: 'number',
-            description: 'Maximum number of transactions to return (default: 100)',
+          search: {
+            type: 'string',
+            description: 'Filter by merchant or category (e.g., "coffee", "amazon", "groceries")',
           },
           since: {
             type: 'string',
-            description: 'Get transactions since this date (ISO format, e.g., 2024-01-01)',
+            description: 'Start date inclusive (YYYY-MM-DD)',
           },
-          cursor: {
+          until: {
             type: 'string',
-            description: 'Pagination cursor for fetching more results',
+            description: 'End date inclusive (YYYY-MM-DD)',
+          },
+          limit: {
+            type: 'number',
+            description: 'Max transactions (default: 50, max: 200)',
           },
         },
       },
+      annotations: { readOnlyHint: true },
     },
     {
       name: 'get_recurring',
-      description: 'Get recurring payments and subscriptions detected from transaction history.',
+      description:
+        'Get detected subscriptions and recurring payments. Use for: "What subscriptions do I have?", "Show my monthly bills", "What are my recurring charges?". Returns: {recurring: [{merchant, amount, frequency, next_date}]}.',
       inputSchema: {
         type: 'object' as const,
-        properties: {
-          since: {
-            type: 'string',
-            description: 'Filter recurring items detected since this date',
-          },
-        },
+        properties: {},
       },
+      annotations: { readOnlyHint: true },
     },
     {
       name: 'get_snapshots',
-      description: 'Get net worth snapshots over time (daily or monthly aggregation).',
+      description:
+        'Get net worth history over time. Use for: "How has my net worth changed?", "Show my financial progress", "What was my balance last month?". Returns: {snapshots: [{d, nw, a, l}]} where nw=net_worth, a=assets, l=liabilities.',
       inputSchema: {
         type: 'object' as const,
         properties: {
           granularity: {
             type: 'string',
             enum: ['daily', 'monthly'],
-            description: 'Aggregation level (default: daily)',
+            description: 'daily or monthly (default: daily)',
           },
           limit: {
             type: 'number',
-            description: 'Number of snapshots to return',
+            description: 'Number of snapshots (default: 30)',
           },
           since: {
             type: 'string',
-            description: 'Start date for snapshots (ISO format)',
+            description: 'Start date (YYYY-MM-DD)',
           },
         },
       },
+      annotations: { readOnlyHint: true },
     },
     {
       name: 'verify_key',
-      description: 'Check if the Warm API key is valid and working.',
+      description: 'Check if API key is valid and working.',
       inputSchema: {
         type: 'object' as const,
         properties: {},
       },
+      annotations: { readOnlyHint: true },
     },
   ],
 }));
@@ -149,39 +200,89 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case 'get_accounts': {
-        const params: Record<string, string> = {};
-        if (args?.since) params.since = String(args.since);
-        const data = await apiRequest('/api/accounts', params);
-        return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+        const data = await apiRequest('/api/accounts');
+        return { content: [{ type: 'text', text: JSON.stringify(data) }] };
       }
 
       case 'get_transactions': {
-        const params: Record<string, string> = {};
-        if (args?.limit) params.limit = String(args.limit);
-        if (args?.since) params.last_knowledge = String(args.since);
-        if (args?.cursor) params.cursor = String(args.cursor);
-        const data = await apiRequest('/api/transactions', params);
-        return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+        const search = args?.search ? String(args.search) : undefined;
+        const since = args?.since ? String(args.since) : undefined;
+        const until = args?.until ? String(args.until) : undefined;
+        const requestedLimit = args?.limit ? Math.min(Number(args.limit), 200) : 50;
+
+        // Fetch more if filtering, since we'll reduce the set
+        const fetchLimit = search || until ? Math.min(requestedLimit * 10, 1000) : requestedLimit;
+
+        const params: Record<string, string> = { limit: String(fetchLimit) };
+        if (since) params.last_knowledge = since;
+
+        const response = (await apiRequest('/api/transactions', params)) as {
+          transactions?: Transaction[];
+          cursor?: string;
+        };
+
+        let transactions = (response.transactions || []) as Transaction[];
+
+        // Apply date range filter (until is client-side since API only supports since)
+        if (until) {
+          transactions = transactions.filter((t) => inDateRange(t, since, until));
+        }
+
+        // Apply search filter
+        if (search) {
+          transactions = transactions.filter((t) => matchesSearch(t, search));
+        }
+
+        // Convert to compact format
+        const compactTxns = transactions.map(compactTransaction);
+
+        // Calculate summary on ALL matching transactions
+        const summary = calculateSummary(compactTxns);
+
+        // Apply limit for display
+        const limited = compactTxns.slice(0, requestedLimit);
+        const truncated = compactTxns.length > requestedLimit;
+
+        // Build compact result
+        const result: {
+          summary: ReturnType<typeof calculateSummary>;
+          txns: CompactTransaction[];
+          more?: number;
+        } = { summary, txns: limited };
+
+        if (truncated) {
+          result.more = compactTxns.length - requestedLimit;
+        }
+
+        // Size check and reduce if needed
+        let output = JSON.stringify(result);
+        if (output.length > MAX_RESPONSE_SIZE) {
+          const reducedCount = Math.floor(limited.length * (MAX_RESPONSE_SIZE / output.length) * 0.8);
+          result.txns = limited.slice(0, reducedCount);
+          result.more = compactTxns.length - reducedCount;
+          output = JSON.stringify(result);
+        }
+
+        return { content: [{ type: 'text', text: output }] };
       }
 
       case 'get_recurring': {
-        const params: Record<string, string> = { limit: '1' };
-        if (args?.since) params.last_knowledge = String(args.since);
-        const response = (await apiRequest('/api/transactions', params)) as {
+        const response = (await apiRequest('/api/transactions', { limit: '1' })) as {
           recurring?: Array<Record<string, unknown>>;
         };
         const recurring = response.recurring || [];
-        return { content: [{ type: 'text', text: JSON.stringify({ recurring }, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify({ recurring }) }] };
       }
 
       case 'get_snapshots': {
-        const response = (await apiRequest('/api/transactions', {
-          limit: '1',
-        })) as { snapshots?: Array<Record<string, unknown>> };
+        const response = (await apiRequest('/api/transactions', { limit: '1' })) as {
+          snapshots?: Array<Record<string, unknown>>;
+        };
         const snapshots = response.snapshots || [];
 
         const granularity = (args?.granularity as string) || 'daily';
-        const limit = args?.limit ? Number(args.limit) : granularity === 'daily' ? 100 : 0;
+        const defaultLimit = granularity === 'daily' ? 30 : 0;
+        const limit = args?.limit ? Number(args.limit) : defaultLimit;
         const since = args?.since as string | undefined;
 
         let filtered = snapshots;
@@ -193,10 +294,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const byMonth = new Map<string, Record<string, unknown>>();
           filtered.forEach((s) => {
             const month = String(s.snapshot_date).substring(0, 7);
-            if (
-              !byMonth.has(month) ||
-              String(s.snapshot_date) > String(byMonth.get(month)!.snapshot_date)
-            ) {
+            if (!byMonth.has(month) || String(s.snapshot_date) > String(byMonth.get(month)!.snapshot_date)) {
               byMonth.set(month, s);
             }
           });
@@ -208,25 +306,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           filtered = filtered.slice(0, limit);
         }
 
-        const result = {
-          granularity,
-          snapshots: filtered.map((s) => ({
-            date: s.snapshot_date,
-            ...(granularity === 'monthly' && {
-              month: String(s.snapshot_date).substring(0, 7),
-            }),
-            net_worth: s.net_worth,
-            total_assets: s.total_assets,
-            total_liabilities: s.total_liabilities,
-          })),
-        };
+        // Compact output
+        const result = filtered.map((s) => ({
+          d: s.snapshot_date,
+          nw: s.net_worth,
+          a: s.total_assets,
+          l: s.total_liabilities,
+        }));
 
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify({ granularity, snapshots: result }) }] };
       }
 
       case 'verify_key': {
         const data = await apiRequest('/api/verify');
-        return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(data) }] };
       }
 
       default:
@@ -235,7 +328,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
-      content: [{ type: 'text', text: JSON.stringify({ error: message }, null, 2) }],
+      content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
       isError: true,
     };
   }
