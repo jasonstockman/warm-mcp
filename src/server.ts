@@ -146,7 +146,7 @@ async function apiRequest(endpoint: string, params: Record<string, string> = {})
   return response.json();
 }
 
-const server = new Server({ name: 'warm', version: '1.2.0' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'warm', version: '1.2.1' }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
