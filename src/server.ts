@@ -14,6 +14,15 @@ import * as os from 'os';
 
 const API_URL = process.env.WARM_API_URL || 'https://warm.io';
 const MAX_RESPONSE_SIZE = 50_000;
+const MAX_TRANSACTION_PAGES = 10;
+const MAX_TRANSACTION_SCAN = 5_000;
+const TRANSACTION_PAGE_SIZE = 200;
+const REQUEST_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.WARM_API_TIMEOUT_MS || 10_000);
+  return Number.isFinite(raw) && raw > 0 ? raw : 10_000;
+})();
+
+let cachedApiKey: string | null | undefined;
 
 interface Transaction {
   id: string;
@@ -66,15 +75,33 @@ function calculateSummary(transactions: CompactTransaction[]) {
 }
 
 function getApiKey(): string | null {
-  if (process.env.WARM_API_KEY) {
-    return process.env.WARM_API_KEY;
+  if (cachedApiKey !== undefined) {
+    return cachedApiKey;
   }
+
+  if (process.env.WARM_API_KEY) {
+    cachedApiKey = process.env.WARM_API_KEY;
+    return cachedApiKey;
+  }
+
   const configPath = path.join(os.homedir(), '.config', 'warm', 'api_key');
   try {
-    return fs.readFileSync(configPath, 'utf-8').trim();
+    cachedApiKey = fs.readFileSync(configPath, 'utf-8').trim();
   } catch {
-    return null;
+    cachedApiKey = null;
   }
+  return cachedApiKey;
+}
+
+function getRequestSignal(timeoutMs: number): AbortSignal {
+  if (typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(timeoutMs);
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref?.();
+  return controller.signal;
 }
 
 async function apiRequest(endpoint: string, params: Record<string, string> = {}): Promise<unknown> {
@@ -88,12 +115,24 @@ async function apiRequest(endpoint: string, params: Record<string, string> = {})
     if (value) url.searchParams.append(key, value);
   });
 
-  const response = await fetch(url.toString(), {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: 'application/json',
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: 'application/json',
+      },
+      signal: getRequestSignal(REQUEST_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      throw new Error(`Warm API timed out after ${REQUEST_TIMEOUT_MS}ms`);
+    }
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`Warm API request aborted after ${REQUEST_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  }
 
   if (!response.ok) {
     const errorMessages: Record<number, string> = {
@@ -208,20 +247,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const search = args?.search ? String(args.search) : undefined;
         const since = args?.since ? String(args.since) : undefined;
         const until = args?.until ? String(args.until) : undefined;
-        const requestedLimit = args?.limit ? Math.min(Number(args.limit), 200) : 50;
+        const parsedLimit = args?.limit ? Number(args.limit) : 50;
+        const requestedLimit = Number.isFinite(parsedLimit)
+          ? Math.max(1, Math.min(Math.floor(parsedLimit), 200))
+          : 50;
 
-        // Fetch more if filtering, since we'll reduce the set
-        const fetchLimit = search || until ? Math.min(requestedLimit * 10, 1000) : requestedLimit;
+        const needsClientFiltering = Boolean(search || until);
+        let transactions: Transaction[] = [];
+        let cursor: string | undefined;
+        let pagesFetched = 0;
+        let scanned = 0;
 
-        const params: Record<string, string> = { limit: String(fetchLimit) };
-        if (since) params.last_knowledge = since;
+        do {
+          const params: Record<string, string> = {
+            limit: String(needsClientFiltering ? TRANSACTION_PAGE_SIZE : requestedLimit),
+          };
+          if (since) params.last_knowledge = since;
+          if (cursor) params.cursor = cursor;
 
-        const response = (await apiRequest('/api/transactions', params)) as {
-          transactions?: Transaction[];
-          cursor?: string;
-        };
+          const response = (await apiRequest('/api/transactions', params)) as {
+            transactions?: Transaction[];
+            cursor?: string;
+          };
 
-        let transactions = (response.transactions || []) as Transaction[];
+          const batch = (response.transactions || []) as Transaction[];
+          transactions.push(...batch);
+          scanned += batch.length;
+          pagesFetched += 1;
+          cursor = response.cursor;
+
+          if (!needsClientFiltering) {
+            break;
+          }
+        } while (cursor && pagesFetched < MAX_TRANSACTION_PAGES && scanned < MAX_TRANSACTION_SCAN);
 
         // Apply date range filter (until is client-side since API only supports since)
         if (until) {
@@ -233,7 +291,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           transactions = transactions.filter((t) => matchesSearch(t, search));
         }
 
-        // Convert to compact format
         const compactTxns = transactions.map(compactTransaction);
 
         // Calculate summary on ALL matching transactions

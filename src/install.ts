@@ -14,6 +14,10 @@ interface Client {
   isProjectLevel?: boolean;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function getClaudeDesktopPath(): string {
   if (platform() === 'win32') {
     return join(
@@ -91,14 +95,14 @@ function configureJson(client: Client, apiKey: string): void {
 
   if (!config.mcpServers) config.mcpServers = {};
   const servers = config.mcpServers as Record<string, unknown>;
-  const existing = servers.warm as Record<string, unknown> | undefined;
+  const existing = isRecord(servers.warm) ? servers.warm : undefined;
+  const existingEnv = isRecord(existing?.env) ? existing.env : {};
 
   // For project-level configs, preserve existing command/args if present — only inject the key.
   if (client.isProjectLevel && existing?.command) {
-    existing.env = { WARM_API_KEY: apiKey };
-    servers.warm = existing;
+    servers.warm = { ...existing, env: { ...existingEnv, WARM_API_KEY: apiKey } };
   } else {
-    servers.warm = { ...MCP_CONFIG, env: { WARM_API_KEY: apiKey } };
+    servers.warm = { ...existing, ...MCP_CONFIG, env: { ...existingEnv, WARM_API_KEY: apiKey } };
   }
 
   mkdirSync(dirname(client.configPath), { recursive: true });
@@ -117,10 +121,16 @@ function configureToml(client: Client, apiKey: string): void {
     platform() === 'win32'
       ? '["/c", "npx", "-y", "@warmio/mcp", "--server"]'
       : '["-y", "@warmio/mcp", "--server"]';
-  content += `\n[mcp_servers.warm]\ncommand = "${tomlCommand}"\nargs = ${tomlArgs}\n\n[mcp_servers.warm.env]\nWARM_API_KEY = "${apiKey}"\n`;
+  const warmBlock = `[mcp_servers.warm]\ncommand = "${tomlCommand}"\nargs = ${tomlArgs}\n\n[mcp_servers.warm.env]\nWARM_API_KEY = "${apiKey}"\n`;
+  const warmBlockPattern = /\n?\[mcp_servers\.warm\][\s\S]*?(?=\n\[[^\n]+\]|\s*$)/g;
+  let nextContent = content.replace(warmBlockPattern, '').trimEnd();
+  if (nextContent.length > 0) {
+    nextContent += '\n\n';
+  }
+  nextContent += warmBlock;
 
   mkdirSync(dirname(client.configPath), { recursive: true });
-  writeFileSync(client.configPath, content);
+  writeFileSync(client.configPath, nextContent.endsWith('\n') ? nextContent : `${nextContent}\n`);
 }
 
 function configure(client: Client, apiKey: string): void {
