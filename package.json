@@ -1,6 +1,6 @@
 {
   "name": "@warmio/mcp",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "MCP server for Warm Financial API",
   "type": "module",
   "main": "dist/index.js",

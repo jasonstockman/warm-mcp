@@ -49,13 +49,6 @@ function compactTransaction(t: Transaction): CompactTransaction {
   };
 }
 
-function matchesSearch(t: Transaction, search: string): boolean {
-  const s = search.toLowerCase();
-  const merchant = (t.merchant_name || t.name || '').toLowerCase();
-  const category = (t.category || '').toLowerCase();
-  return merchant.includes(s) || category.includes(s);
-}
-
 function inDateRange(t: Transaction, since?: string, until?: string): boolean {
   if (since && t.date < since) return false;
   if (until && t.date > until) return false;
@@ -146,7 +139,7 @@ async function apiRequest(endpoint: string, params: Record<string, string> = {})
   return response.json();
 }
 
-const server = new Server({ name: 'warm', version: '1.2.1' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'warm', version: '1.2.2' }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
@@ -163,14 +156,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_transactions',
       description:
-        'Search and analyze transactions. Use for: "How much did I spend on X?", "Show my Amazon purchases", "What did I buy last month?". Returns: {summary: {total, count, avg}, txns: [{d, a, m, c}]} where d=date, a=amount, m=merchant, c=category.',
+        'Get transactions and analyze spending. Use for: "How much did I spend on coffee?", "Show my purchases", "What did I buy last month?". Returns: {summary: {total, count, avg}, txns: [{d, a, m, c}]} where d=date, a=amount, m=merchant, c=category. IMPORTANT: Do NOT pre-filter—fetch all transactions then analyze the `c` (category) field to answer category questions (coffee, dining, groceries, etc.). Category details take priority over merchant name string matching.',
       inputSchema: {
         type: 'object' as const,
         properties: {
-          search: {
-            type: 'string',
-            description: 'Filter by merchant or category (e.g., "coffee", "amazon", "groceries")',
-          },
           since: {
             type: 'string',
             description: 'Start date inclusive (YYYY-MM-DD)',
@@ -181,7 +170,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           limit: {
             type: 'number',
-            description: 'Max transactions (default: 50, max: 200)',
+            description: 'Max transactions to return (default: 200, max: 500)',
           },
         },
       },
@@ -244,15 +233,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_transactions': {
-        const search = args?.search ? String(args.search) : undefined;
         const since = args?.since ? String(args.since) : undefined;
         const until = args?.until ? String(args.until) : undefined;
-        const parsedLimit = args?.limit ? Number(args.limit) : 50;
+        const parsedLimit = args?.limit ? Number(args.limit) : 200;
         const requestedLimit = Number.isFinite(parsedLimit)
-          ? Math.max(1, Math.min(Math.floor(parsedLimit), 200))
-          : 50;
+          ? Math.max(1, Math.min(Math.floor(parsedLimit), 500))
+          : 200;
 
-        const needsClientFiltering = Boolean(search || until);
         let transactions: Transaction[] = [];
         let cursor: string | undefined;
         let pagesFetched = 0;
@@ -260,7 +247,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         do {
           const params: Record<string, string> = {
-            limit: String(needsClientFiltering ? TRANSACTION_PAGE_SIZE : requestedLimit),
+            limit: String(TRANSACTION_PAGE_SIZE),
           };
           if (since) params.last_knowledge = since;
           if (cursor) params.cursor = cursor;
@@ -275,20 +262,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           scanned += batch.length;
           pagesFetched += 1;
           cursor = response.cursor;
-
-          if (!needsClientFiltering) {
-            break;
-          }
         } while (cursor && pagesFetched < MAX_TRANSACTION_PAGES && scanned < MAX_TRANSACTION_SCAN);
 
         // Apply date range filter (until is client-side since API only supports since)
         if (until) {
           transactions = transactions.filter((t) => inDateRange(t, since, until));
-        }
-
-        // Apply search filter
-        if (search) {
-          transactions = transactions.filter((t) => matchesSearch(t, search));
         }
 
         const compactTxns = transactions.map(compactTransaction);
