@@ -139,7 +139,7 @@ async function apiRequest(endpoint: string, params: Record<string, string> = {})
   return response.json();
 }
 
-const server = new Server({ name: 'warm', version: '1.2.2' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'warm', version: '1.2.3' }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
@@ -170,7 +170,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           limit: {
             type: 'number',
-            description: 'Max transactions to return (default: 200, max: 500)',
+            description: 'Max transactions to return (default: 200, max: 1000)',
           },
         },
       },
@@ -237,7 +237,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const until = args?.until ? String(args.until) : undefined;
         const parsedLimit = args?.limit ? Number(args.limit) : 200;
         const requestedLimit = Number.isFinite(parsedLimit)
-          ? Math.max(1, Math.min(Math.floor(parsedLimit), 500))
+          ? Math.max(1, Math.min(Math.floor(parsedLimit), 1000))
           : 200;
 
         let transactions: Transaction[] = [];
@@ -305,8 +305,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const response = (await apiRequest('/api/transactions', { limit: '1' })) as {
           recurring?: Array<Record<string, unknown>>;
         };
-        const recurring = response.recurring || [];
-        return { content: [{ type: 'text', text: JSON.stringify({ recurring }) }] };
+        const raw = response.recurring || [];
+
+        // Compact to only the fields the tool description advertises
+        const recurring = raw.map((r) => ({
+          merchant: r.merchant_name || r.merchant || r.name || 'Unknown',
+          amount: r.amount,
+          frequency: r.frequency,
+          next_date: r.next_date,
+        }));
+
+        let output = JSON.stringify({ recurring });
+        if (output.length > MAX_RESPONSE_SIZE) {
+          const reducedCount = Math.floor(recurring.length * (MAX_RESPONSE_SIZE / output.length) * 0.8);
+          output = JSON.stringify({ recurring: recurring.slice(0, reducedCount), more: recurring.length - reducedCount });
+        }
+
+        return { content: [{ type: 'text', text: output }] };
       }
 
       case 'get_snapshots': {
