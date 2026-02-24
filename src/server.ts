@@ -11,6 +11,8 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { generateApiTypeString } from './api-types.js';
+import { executeSandboxedCode } from './sandbox.js';
 
 const API_URL = process.env.WARM_API_URL || 'https://warm.io';
 const MAX_RESPONSE_SIZE = 50_000;
@@ -139,14 +141,194 @@ async function apiRequest(endpoint: string, params: Record<string, string> = {})
   return response.json();
 }
 
-const server = new Server({ name: 'warm', version: '1.2.3' }, { capabilities: { tools: {} } });
+function sizeCheck(data: unknown[], maxSize: number): unknown[] {
+  let output = JSON.stringify(data);
+  if (output.length > maxSize) {
+    const reducedCount = Math.floor(data.length * (maxSize / output.length) * 0.8);
+    return data.slice(0, reducedCount);
+  }
+  return data;
+}
+
+// ============================================
+// EXTRACTED TOOL HANDLERS
+// ============================================
+
+async function handleGetAccounts(): Promise<unknown> {
+  return apiRequest('/api/accounts');
+}
+
+async function handleGetTransactions(args?: Record<string, unknown>): Promise<unknown> {
+  const since = args?.since ? String(args.since) : undefined;
+  const until = args?.until ? String(args.until) : undefined;
+  const parsedLimit = args?.limit ? Number(args.limit) : 200;
+  const requestedLimit = Number.isFinite(parsedLimit)
+    ? Math.max(1, Math.min(Math.floor(parsedLimit), 1000))
+    : 200;
+
+  let transactions: Transaction[] = [];
+  let cursor: string | undefined;
+  let pagesFetched = 0;
+  let scanned = 0;
+
+  do {
+    const params: Record<string, string> = {
+      limit: String(TRANSACTION_PAGE_SIZE),
+    };
+    if (since) params.last_knowledge = since;
+    if (cursor) params.cursor = cursor;
+
+    const response = (await apiRequest('/api/transactions', params)) as {
+      transactions?: Transaction[];
+      cursor?: string;
+    };
+
+    const batch = (response.transactions || []) as Transaction[];
+    transactions.push(...batch);
+    scanned += batch.length;
+    pagesFetched += 1;
+    cursor = response.cursor;
+  } while (cursor && pagesFetched < MAX_TRANSACTION_PAGES && scanned < MAX_TRANSACTION_SCAN);
+
+  if (until) {
+    transactions = transactions.filter((t) => inDateRange(t, since, until));
+  }
+
+  const compactTxns = transactions.map(compactTransaction);
+  const summary = calculateSummary(compactTxns);
+  const limited = compactTxns.slice(0, requestedLimit);
+  const truncated = compactTxns.length > requestedLimit;
+
+  const result: {
+    summary: ReturnType<typeof calculateSummary>;
+    txns: CompactTransaction[];
+    more?: number;
+  } = { summary, txns: limited };
+
+  if (truncated) {
+    result.more = compactTxns.length - requestedLimit;
+  }
+
+  let output = JSON.stringify(result);
+  if (output.length > MAX_RESPONSE_SIZE) {
+    const reducedCount = Math.floor(limited.length * (MAX_RESPONSE_SIZE / output.length) * 0.8);
+    result.txns = limited.slice(0, reducedCount);
+    result.more = compactTxns.length - reducedCount;
+  }
+
+  return result;
+}
+
+async function handleGetRecurring(): Promise<unknown> {
+  const response = (await apiRequest('/api/subscriptions')) as {
+    recurring_transactions?: Array<Record<string, unknown>>;
+  };
+  const raw = response.recurring_transactions || [];
+
+  const recurring = raw.map((r) => ({
+    merchant: r.merchant_name || r.merchant || r.name || 'Unknown',
+    amount: r.amount,
+    frequency: r.frequency,
+    next_date: r.next_date,
+  }));
+
+  const checked = sizeCheck(recurring, MAX_RESPONSE_SIZE) as typeof recurring;
+  const result: { recurring: typeof recurring; more?: number } = { recurring: checked };
+  if (checked.length < recurring.length) {
+    result.more = recurring.length - checked.length;
+  }
+
+  return result;
+}
+
+async function handleGetSnapshots(args?: Record<string, unknown>): Promise<unknown> {
+  const response = (await apiRequest('/api/snapshots')) as {
+    snapshots?: Array<Record<string, unknown>>;
+  };
+  const snapshots = response.snapshots || [];
+
+  const granularity = (args?.granularity as string) || 'daily';
+  const defaultLimit = granularity === 'daily' ? 30 : 0;
+  const limit = args?.limit ? Number(args.limit) : defaultLimit;
+  const since = args?.since as string | undefined;
+
+  let filtered = snapshots;
+  if (since) {
+    filtered = filtered.filter((s) => String(s.snapshot_date) >= since);
+  }
+
+  if (granularity === 'monthly') {
+    const byMonth = new Map<string, Record<string, unknown>>();
+    filtered.forEach((s) => {
+      const month = String(s.snapshot_date).substring(0, 7);
+      if (!byMonth.has(month) || String(s.snapshot_date) > String(byMonth.get(month)!.snapshot_date)) {
+        byMonth.set(month, s);
+      }
+    });
+    filtered = Array.from(byMonth.values());
+  }
+
+  filtered.sort((a, b) => String(b.snapshot_date).localeCompare(String(a.snapshot_date)));
+  if (limit > 0) {
+    filtered = filtered.slice(0, limit);
+  }
+
+  const result = filtered.map((s) => ({
+    d: s.snapshot_date,
+    nw: s.net_worth,
+    a: s.total_assets,
+    l: s.total_liabilities,
+  }));
+
+  return { granularity, snapshots: result };
+}
+
+async function handleVerifyKey(): Promise<unknown> {
+  return apiRequest('/api/verify');
+}
+
+async function handleGetBudgets(): Promise<unknown> {
+  return apiRequest('/api/budgets');
+}
+
+async function handleGetGoals(): Promise<unknown> {
+  return apiRequest('/api/goals');
+}
+
+async function handleGetHealth(): Promise<unknown> {
+  return apiRequest('/api/health');
+}
+
+async function handleGetSpending(args?: Record<string, unknown>): Promise<unknown> {
+  const months = args?.months ? String(args.months) : '6';
+  return apiRequest('/api/spending', { months });
+}
+
+// Tool name → handler mapping for sandbox dispatch
+const toolHandlers: Record<string, (args?: Record<string, unknown>) => Promise<unknown>> = {
+  get_accounts: handleGetAccounts,
+  get_transactions: handleGetTransactions,
+  get_recurring: handleGetRecurring,
+  get_snapshots: handleGetSnapshots,
+  verify_key: handleVerifyKey,
+  get_budgets: handleGetBudgets,
+  get_goals: handleGetGoals,
+  get_health: handleGetHealth,
+  get_spending: handleGetSpending,
+};
+
+// ============================================
+// SERVER SETUP
+// ============================================
+
+const server = new Server({ name: 'warm', version: '2.0.0' }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'get_accounts',
       description:
-        'Get all connected bank accounts with balances. Use for: "What accounts do I have?", "What is my checking balance?", "Show my credit cards". Returns: array of {name, type, balance, institution}.',
+        'Get all connected bank accounts with balances. Use for: "What accounts do I have?", "What is my checking balance?", "Show my credit cards".\nReturns: { accounts: Array<{ name: string; type: string; balance: number; institution: string }> }',
       inputSchema: {
         type: 'object' as const,
         properties: {},
@@ -156,7 +338,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_transactions',
       description:
-        'Get transactions and analyze spending. Use for: "How much did I spend on coffee?", "Show my purchases", "What did I buy last month?". Returns: {summary: {total, count, avg}, txns: [{d, a, m, c}]} where d=date, a=amount, m=merchant, c=category. IMPORTANT: Do NOT pre-filter—fetch all transactions then analyze the `c` (category) field to answer category questions (coffee, dining, groceries, etc.). Category details take priority over merchant name string matching.',
+        'Get transactions and analyze spending. Use for: "How much did I spend on coffee?", "Show my purchases", "What did I buy last month?". IMPORTANT: Do NOT pre-filter—fetch all transactions then analyze the `c` (category) field to answer category questions.\nReturns: { summary: { total: number; count: number; avg: number }; txns: Array<{ d: string; a: number; m: string; c: string | null }>; more?: number }',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -179,7 +361,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_recurring',
       description:
-        'Get detected subscriptions and recurring payments. Use for: "What subscriptions do I have?", "Show my monthly bills", "What are my recurring charges?". Returns: {recurring: [{merchant, amount, frequency, next_date}]}.',
+        'Get detected subscriptions and recurring payments. Use for: "What subscriptions do I have?", "Show my monthly bills", "What are my recurring charges?".\nReturns: { recurring: Array<{ merchant: string; amount: number; frequency: string; next_date: string | null }> }',
       inputSchema: {
         type: 'object' as const,
         properties: {},
@@ -189,7 +371,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_snapshots',
       description:
-        'Get net worth history over time. Use for: "How has my net worth changed?", "Show my financial progress", "What was my balance last month?". Returns: {snapshots: [{d, nw, a, l}]} where nw=net_worth, a=assets, l=liabilities.',
+        'Get net worth history over time. Use for: "How has my net worth changed?", "Show my financial progress", "What was my balance last month?".\nReturns: { granularity: string; snapshots: Array<{ d: string; nw: number; a: number; l: number }> }',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -211,8 +393,69 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       annotations: { readOnlyHint: true },
     },
     {
+      name: 'get_budgets',
+      description:
+        'Get all budgets with current spending progress. Use for: "How are my budgets?", "Am I over budget?", "Show my budget status".\nReturns: { budgets: Array<{ name: string; amount: number; spent: number; remaining: number; percent_used: number; period: string; status: string }> }',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {},
+      },
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'get_goals',
+      description:
+        'Get savings goals with progress. Use for: "How are my goals?", "Savings progress", "Am I on track for my goals?".\nReturns: { goals: Array<{ name: string; target: number; current: number; progress_percent: number; target_date: string | null; status: string }> }',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {},
+      },
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'get_health',
+      description:
+        'Get financial health score and pillar breakdown. Use for: "What\'s my financial health?", "How am I doing financially?", "Health score".\nReturns: { score: number | null; label: string | null; pillars: { spend: number; save: number; borrow: number; build: number } | null }',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {},
+      },
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'get_spending',
+      description:
+        'Get spending breakdown by category over a period. Use for: "Where does my money go?", "Spending by category", "Top spending categories".\nReturns: { spending: Array<{ category: string; total: number; count: number }>; period: { start: string; end: string } }',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          months: {
+            type: 'number',
+            description: 'Number of months to analyze (default: 6, max: 24)',
+          },
+        },
+      },
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'run_analysis',
+      description:
+        `Run JavaScript code that calls warm.* functions for complex multi-step analysis. Use when a query requires combining data from multiple tools, custom calculations, or comparisons that would take 3+ tool calls.\n\nAvailable API:\n${generateApiTypeString()}\n\nUse console.log() to output results. Example:\nconst [accounts, txns] = await Promise.all([warm.getAccounts(), warm.getTransactions({ since: "2024-01-01" })]);\nconst total = txns.txns.reduce((s, t) => s + t.a, 0);\nconsole.log(JSON.stringify({ accounts: accounts.accounts.length, totalSpent: total }));`,
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          code: {
+            type: 'string',
+            description: 'JavaScript code to execute. Use warm.* functions and console.log() for output.',
+          },
+        },
+        required: ['code'],
+      },
+      annotations: { readOnlyHint: true },
+    },
+    {
       name: 'verify_key',
-      description: 'Check if API key is valid and working.',
+      description: 'Check if API key is valid and working.\nReturns: { valid: boolean; user_id: string }',
       inputSchema: {
         type: 'object' as const,
         properties: {},
@@ -226,155 +469,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   try {
-    switch (name) {
-      case 'get_accounts': {
-        const data = await apiRequest('/api/accounts');
-        return { content: [{ type: 'text', text: JSON.stringify(data) }] };
+    // Handle run_analysis separately (sandbox execution)
+    if (name === 'run_analysis') {
+      const code = args?.code ? String(args.code) : '';
+      if (!code) {
+        throw new Error('Code parameter is required');
       }
 
-      case 'get_transactions': {
-        const since = args?.since ? String(args.since) : undefined;
-        const until = args?.until ? String(args.until) : undefined;
-        const parsedLimit = args?.limit ? Number(args.limit) : 200;
-        const requestedLimit = Number.isFinite(parsedLimit)
-          ? Math.max(1, Math.min(Math.floor(parsedLimit), 1000))
-          : 200;
-
-        let transactions: Transaction[] = [];
-        let cursor: string | undefined;
-        let pagesFetched = 0;
-        let scanned = 0;
-
-        do {
-          const params: Record<string, string> = {
-            limit: String(TRANSACTION_PAGE_SIZE),
-          };
-          if (since) params.last_knowledge = since;
-          if (cursor) params.cursor = cursor;
-
-          const response = (await apiRequest('/api/transactions', params)) as {
-            transactions?: Transaction[];
-            cursor?: string;
-          };
-
-          const batch = (response.transactions || []) as Transaction[];
-          transactions.push(...batch);
-          scanned += batch.length;
-          pagesFetched += 1;
-          cursor = response.cursor;
-        } while (cursor && pagesFetched < MAX_TRANSACTION_PAGES && scanned < MAX_TRANSACTION_SCAN);
-
-        // Apply date range filter (until is client-side since API only supports since)
-        if (until) {
-          transactions = transactions.filter((t) => inDateRange(t, since, until));
+      const callApi = async (tool: string, params: Record<string, unknown>): Promise<unknown> => {
+        const handler = toolHandlers[tool];
+        if (!handler) {
+          throw new Error(`Unknown tool: ${tool}`);
         }
+        return handler(params);
+      };
 
-        const compactTxns = transactions.map(compactTransaction);
+      const result = await executeSandboxedCode(code, callApi);
+      const text = result.error
+        ? `Output:\n${result.output}\n\nError: ${result.error}`
+        : result.output;
 
-        // Calculate summary on ALL matching transactions
-        const summary = calculateSummary(compactTxns);
-
-        // Apply limit for display
-        const limited = compactTxns.slice(0, requestedLimit);
-        const truncated = compactTxns.length > requestedLimit;
-
-        // Build compact result
-        const result: {
-          summary: ReturnType<typeof calculateSummary>;
-          txns: CompactTransaction[];
-          more?: number;
-        } = { summary, txns: limited };
-
-        if (truncated) {
-          result.more = compactTxns.length - requestedLimit;
-        }
-
-        // Size check and reduce if needed
-        let output = JSON.stringify(result);
-        if (output.length > MAX_RESPONSE_SIZE) {
-          const reducedCount = Math.floor(limited.length * (MAX_RESPONSE_SIZE / output.length) * 0.8);
-          result.txns = limited.slice(0, reducedCount);
-          result.more = compactTxns.length - reducedCount;
-          output = JSON.stringify(result);
-        }
-
-        return { content: [{ type: 'text', text: output }] };
-      }
-
-      case 'get_recurring': {
-        const response = (await apiRequest('/api/transactions', { limit: '1' })) as {
-          recurring?: Array<Record<string, unknown>>;
-        };
-        const raw = response.recurring || [];
-
-        // Compact to only the fields the tool description advertises
-        const recurring = raw.map((r) => ({
-          merchant: r.merchant_name || r.merchant || r.name || 'Unknown',
-          amount: r.amount,
-          frequency: r.frequency,
-          next_date: r.next_date,
-        }));
-
-        let output = JSON.stringify({ recurring });
-        if (output.length > MAX_RESPONSE_SIZE) {
-          const reducedCount = Math.floor(recurring.length * (MAX_RESPONSE_SIZE / output.length) * 0.8);
-          output = JSON.stringify({ recurring: recurring.slice(0, reducedCount), more: recurring.length - reducedCount });
-        }
-
-        return { content: [{ type: 'text', text: output }] };
-      }
-
-      case 'get_snapshots': {
-        const response = (await apiRequest('/api/transactions', { limit: '1' })) as {
-          snapshots?: Array<Record<string, unknown>>;
-        };
-        const snapshots = response.snapshots || [];
-
-        const granularity = (args?.granularity as string) || 'daily';
-        const defaultLimit = granularity === 'daily' ? 30 : 0;
-        const limit = args?.limit ? Number(args.limit) : defaultLimit;
-        const since = args?.since as string | undefined;
-
-        let filtered = snapshots;
-        if (since) {
-          filtered = filtered.filter((s) => String(s.snapshot_date) >= since);
-        }
-
-        if (granularity === 'monthly') {
-          const byMonth = new Map<string, Record<string, unknown>>();
-          filtered.forEach((s) => {
-            const month = String(s.snapshot_date).substring(0, 7);
-            if (!byMonth.has(month) || String(s.snapshot_date) > String(byMonth.get(month)!.snapshot_date)) {
-              byMonth.set(month, s);
-            }
-          });
-          filtered = Array.from(byMonth.values());
-        }
-
-        filtered.sort((a, b) => String(b.snapshot_date).localeCompare(String(a.snapshot_date)));
-        if (limit > 0) {
-          filtered = filtered.slice(0, limit);
-        }
-
-        // Compact output
-        const result = filtered.map((s) => ({
-          d: s.snapshot_date,
-          nw: s.net_worth,
-          a: s.total_assets,
-          l: s.total_liabilities,
-        }));
-
-        return { content: [{ type: 'text', text: JSON.stringify({ granularity, snapshots: result }) }] };
-      }
-
-      case 'verify_key': {
-        const data = await apiRequest('/api/verify');
-        return { content: [{ type: 'text', text: JSON.stringify(data) }] };
-      }
-
-      default:
-        throw new Error(`Unknown tool: ${name}`);
+      return {
+        content: [{ type: 'text', text }],
+        isError: !!result.error,
+      };
     }
+
+    // Standard tool dispatch
+    const handler = toolHandlers[name];
+    if (!handler) {
+      throw new Error(`Unknown tool: ${name}`);
+    }
+
+    const data = await handler(args as Record<string, unknown> | undefined);
+    return { content: [{ type: 'text', text: JSON.stringify(data) }] };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
