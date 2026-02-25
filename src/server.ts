@@ -32,22 +32,24 @@ interface Transaction {
   amount: number;
   merchant_name?: string;
   name?: string;
-  category?: string;
+  primary_category?: string;
+  detailed_category?: string;
 }
 
 interface CompactTransaction {
   d: string; // date
-  a: number; // amount
+  a: number; // amount (positive = expense, negative = income)
   m: string; // merchant
-  c: string | null; // category
+  c: string | null; // primary category
 }
 
 function compactTransaction(t: Transaction): CompactTransaction {
   return {
     d: t.date,
-    a: t.amount,
+    // Positive = expense, negative = income/deposit (Plaid convention)
+    a: Math.round(t.amount * 100) / 100,
     m: t.merchant_name || t.name || 'Unknown',
-    c: t.category || null,
+    c: t.primary_category || null,
   };
 }
 
@@ -227,7 +229,8 @@ async function handleGetRecurring(): Promise<unknown> {
 
   const recurring = raw.map((r) => ({
     merchant: r.merchant_name || r.merchant || r.name || 'Unknown',
-    amount: r.amount,
+    // Normalize to positive amounts
+    amount: Math.round(Math.abs(Number(r.amount) || 0) * 100) / 100,
     frequency: r.frequency,
     next_date: r.next_date,
   }));
@@ -338,7 +341,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_transactions',
       description:
-        'Get transactions and analyze spending. Use for: "How much did I spend on coffee?", "Show my purchases", "What did I buy last month?". IMPORTANT: Do NOT pre-filter—fetch all transactions then analyze the `c` (category) field to answer category questions.\nReturns: { summary: { total: number; count: number; avg: number }; txns: Array<{ d: string; a: number; m: string; c: string | null }>; more?: number }',
+        'Get transactions and analyze spending. Use for: "How much did I spend on coffee?", "Show my purchases", "What did I buy last month?", "Show my income". Use the `c` (category) field to filter: INCOME and TRANSFER_IN = income, all others = expenses. Amounts: positive = expense, negative = income/deposit.\nReturns: { summary: { total: number; count: number; avg: number }; txns: Array<{ d: string; a: number; m: string; c: string | null }>; more?: number }',
       inputSchema: {
         type: 'object' as const,
         properties: {
