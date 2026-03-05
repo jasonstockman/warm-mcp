@@ -27,13 +27,13 @@ const REQUEST_TIMEOUT_MS = (() => {
 let cachedApiKey: string | null | undefined;
 
 interface Transaction {
-  id: string;
-  date: string;
-  amount: number;
-  merchant_name?: string;
-  name?: string;
-  primary_category?: string;
-  detailed_category?: string;
+  id: string | null;
+  date: string | null;
+  amount: number | null;
+  merchant_name?: string | null;
+  name?: string | null;
+  primary_category?: string | null;
+  detailed_category?: string | null;
 }
 
 interface CompactTransaction {
@@ -45,15 +45,17 @@ interface CompactTransaction {
 
 function compactTransaction(t: Transaction): CompactTransaction {
   return {
-    d: t.date,
+    d: t.date || '',
     // Positive = expense, negative = income/deposit (Plaid convention)
-    a: Math.round(t.amount * 100) / 100,
+    a: t.amount ? Math.round(t.amount * 100) / 100 : 0,
     m: t.merchant_name || t.name || 'Unknown',
-    c: t.primary_category || null,
+    // Include category (null if not set)
+    c: t.primary_category ?? null,
   };
 }
 
 function inDateRange(t: Transaction, since?: string, until?: string): boolean {
+  if (!t.date) return false;
   if (since && t.date < since) return false;
   if (until && t.date > until) return false;
   return true;
@@ -182,14 +184,14 @@ async function handleGetTransactions(args?: Record<string, unknown>): Promise<un
 
     const response = (await apiRequest('/api/transactions', params)) as {
       transactions?: Transaction[];
-      cursor?: string;
+      pagination?: { next_cursor: string | null };
     };
 
     const batch = (response.transactions || []) as Transaction[];
     transactions.push(...batch);
     scanned += batch.length;
     pagesFetched += 1;
-    cursor = response.cursor;
+    cursor = response.pagination?.next_cursor ?? undefined;
   } while (cursor && pagesFetched < MAX_TRANSACTION_PAGES && scanned < MAX_TRANSACTION_SCAN);
 
   if (until) {
