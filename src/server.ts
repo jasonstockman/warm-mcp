@@ -26,6 +26,10 @@ const REQUEST_TIMEOUT_MS = (() => {
 
 let cachedApiKey: string | null | undefined;
 
+// ============================================
+// API RESPONSE TYPE DEFINITIONS
+// ============================================
+
 interface Transaction {
   id: string | null;
   date: string | null;
@@ -34,6 +38,71 @@ interface Transaction {
   name?: string | null;
   primary_category?: string | null;
   detailed_category?: string | null;
+}
+
+interface ApiAccount {
+  name: string;
+  type: string;
+  balance: number;
+  institution: string;
+}
+
+interface ApiBudget {
+  name: string;
+  amount: number;
+  spent: number;
+  remaining: number;
+  percent_used: number;
+  period: string;
+  status: string;
+  budget_type?: string;
+  rollover_enabled?: boolean;
+  effective_amount?: number;
+}
+
+interface ApiGoal {
+  name: string;
+  target: number;
+  current: number;
+  progress_percent: number;
+  target_date: string | null;
+  status: string;
+  category?: string;
+  monthly_contribution_needed?: number;
+  linked_account?: { name: string } | null;
+}
+
+interface ApiSnapshot {
+  snapshot_date?: string;
+  d?: string;
+  net_worth?: number;
+  nw?: number;
+  total_assets?: number;
+  a?: number;
+  total_liabilities?: number;
+  l?: number;
+}
+
+interface ApiRecurring {
+  merchant_name?: string;
+  merchant?: string;
+  name?: string;
+  amount?: number;
+  frequency?: string;
+  next_date?: string | null;
+}
+
+interface ApiHealth {
+  score: number | null;
+  label: string | null;
+  pillars: {
+    spend: number;
+    save: number;
+    borrow: number;
+    build: number;
+  } | null;
+  message?: string;
+  generated_at?: string;
 }
 
 interface CompactTransaction {
@@ -159,7 +228,19 @@ function sizeCheck(data: unknown[], maxSize: number): unknown[] {
 // ============================================
 
 async function handleGetAccounts(): Promise<unknown> {
-  return apiRequest('/api/accounts');
+  const response = (await apiRequest('/api/accounts')) as {
+    accounts?: Array<{
+      name: string;
+      type: string;
+      balance: number;
+      institution: string;
+    }>;
+    generated_at?: string;
+  };
+
+  return {
+    accounts: response.accounts || [],
+  };
 }
 
 async function handleGetTransactions(args?: Record<string, unknown>): Promise<unknown> {
@@ -225,16 +306,17 @@ async function handleGetTransactions(args?: Record<string, unknown>): Promise<un
 
 async function handleGetRecurring(): Promise<unknown> {
   const response = (await apiRequest('/api/subscriptions')) as {
-    recurring_transactions?: Array<Record<string, unknown>>;
+    recurring_transactions?: ApiRecurring[];
+    generated_at?: string;
   };
   const raw = response.recurring_transactions || [];
 
   const recurring = raw.map((r) => ({
-    merchant: r.merchant_name || r.merchant || r.name || 'Unknown',
+    merchant: String(r.merchant_name || r.merchant || r.name || 'Unknown'),
     // Normalize to positive amounts
     amount: Math.round(Math.abs(Number(r.amount) || 0) * 100) / 100,
-    frequency: r.frequency,
-    next_date: r.next_date,
+    frequency: String(r.frequency || ''),
+    next_date: r.next_date ?? null,
   }));
 
   const checked = sizeCheck(recurring, MAX_RESPONSE_SIZE) as typeof recurring;
@@ -248,7 +330,8 @@ async function handleGetRecurring(): Promise<unknown> {
 
 async function handleGetSnapshots(args?: Record<string, unknown>): Promise<unknown> {
   const response = (await apiRequest('/api/snapshots')) as {
-    snapshots?: Array<Record<string, unknown>>;
+    snapshots?: ApiSnapshot[];
+    generated_at?: string;
   };
   const snapshots = response.snapshots || [];
 
@@ -257,56 +340,130 @@ async function handleGetSnapshots(args?: Record<string, unknown>): Promise<unkno
   const limit = args?.limit ? Number(args.limit) : defaultLimit;
   const since = args?.since as string | undefined;
 
-  let filtered = snapshots;
+  // Normalize snapshot dates (support both snapshot_date and d)
+  const normalized = snapshots.map((s) => ({
+    date: s.snapshot_date || s.d || '',
+    net_worth: s.net_worth ?? s.nw ?? 0,
+    total_assets: s.total_assets ?? s.a ?? 0,
+    total_liabilities: s.total_liabilities ?? s.l ?? 0,
+  }));
+
+  let filtered = normalized;
   if (since) {
-    filtered = filtered.filter((s) => String(s.snapshot_date) >= since);
+    filtered = filtered.filter((s) => s.date >= since);
   }
 
   if (granularity === 'monthly') {
-    const byMonth = new Map<string, Record<string, unknown>>();
+    const byMonth = new Map<string, typeof normalized[0]>();
     filtered.forEach((s) => {
-      const month = String(s.snapshot_date).substring(0, 7);
-      if (!byMonth.has(month) || String(s.snapshot_date) > String(byMonth.get(month)!.snapshot_date)) {
+      const month = s.date.substring(0, 7);
+      if (!byMonth.has(month) || s.date > (byMonth.get(month)?.date || '')) {
         byMonth.set(month, s);
       }
     });
     filtered = Array.from(byMonth.values());
   }
 
-  filtered.sort((a, b) => String(b.snapshot_date).localeCompare(String(a.snapshot_date)));
+  filtered.sort((a, b) => b.date.localeCompare(a.date));
   if (limit > 0) {
     filtered = filtered.slice(0, limit);
   }
 
   const result = filtered.map((s) => ({
-    d: s.snapshot_date,
-    nw: s.net_worth,
-    a: s.total_assets,
-    l: s.total_liabilities,
+    d: s.date,
+    nw: Math.round(s.net_worth * 100) / 100,
+    a: Math.round(s.total_assets * 100) / 100,
+    l: Math.round(s.total_liabilities * 100) / 100,
   }));
 
   return { granularity, snapshots: result };
 }
 
 async function handleVerifyKey(): Promise<unknown> {
-  return apiRequest('/api/verify');
+  const response = (await apiRequest('/api/verify')) as {
+    valid?: boolean;
+    status?: string;
+    error?: string;
+  };
+
+  return {
+    valid: response.valid === true,
+    status: response.status || (response.valid ? 'ok' : 'invalid'),
+  };
 }
 
 async function handleGetBudgets(): Promise<unknown> {
-  return apiRequest('/api/budgets');
+  const response = (await apiRequest('/api/budgets')) as {
+    budgets?: ApiBudget[];
+    generated_at?: string;
+  };
+
+  // Filter to only include spec-defined fields
+  const budgets = (response.budgets || []).map((b) => ({
+    name: String(b.name || ''),
+    amount: Number(b.amount || 0),
+    spent: Number(b.spent || 0),
+    remaining: Number(b.remaining || 0),
+    percent_used: Number(b.percent_used || 0),
+    period: String(b.period || ''),
+    status: String(b.status || ''),
+  }));
+
+  return { budgets };
 }
 
 async function handleGetGoals(): Promise<unknown> {
-  return apiRequest('/api/goals');
+  const response = (await apiRequest('/api/goals')) as {
+    goals?: ApiGoal[];
+    generated_at?: string;
+  };
+
+  // Filter to only include spec-defined fields
+  const goals = (response.goals || []).map((g) => ({
+    name: String(g.name || ''),
+    target: Number(g.target || 0),
+    current: Number(g.current || 0),
+    progress_percent: Number(g.progress_percent || 0),
+    target_date: g.target_date ?? null,
+    status: String(g.status || ''),
+  }));
+
+  return { goals };
 }
 
 async function handleGetHealth(): Promise<unknown> {
-  return apiRequest('/api/health');
+  const response = (await apiRequest('/api/health')) as ApiHealth;
+
+  return {
+    score: response.score ?? null,
+    label: response.label ?? null,
+    pillars: response.pillars
+      ? {
+          spend: Number(response.pillars.spend || 0),
+          save: Number(response.pillars.save || 0),
+          borrow: Number(response.pillars.borrow || 0),
+          build: Number(response.pillars.build || 0),
+        }
+      : null,
+  };
 }
 
 async function handleGetSpending(args?: Record<string, unknown>): Promise<unknown> {
   const months = args?.months ? String(args.months) : '6';
-  return apiRequest('/api/spending', { months });
+  const response = (await apiRequest('/api/spending', { months })) as {
+    spending?: Array<{ category: string; total: number; count: number }>;
+    period?: { start: string; end: string };
+    generated_at?: string;
+  };
+
+  return {
+    spending: (response.spending || []).map((s) => ({
+      category: String(s.category || ''),
+      total: Math.round(Number(s.total || 0) * 100) / 100,
+      count: Number(s.count || 0),
+    })),
+    period: response.period || { start: '', end: '' },
+  };
 }
 
 // Tool name → handler mapping for sandbox dispatch
