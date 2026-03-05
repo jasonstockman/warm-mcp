@@ -13,11 +13,10 @@ export function generateApiTypeString(): string {
     accounts: Array<{ name: string; type: string; balance: number; institution: string }>;
   }>;
 
-  /** Get transactions. Amounts: positive = expense, negative = income. Category c: "INCOME"/"TRANSFER_IN" = income, others = expenses. */
+  /** Get transactions (primary tool for spending analysis). Amounts: positive = expense, negative = income. Category c: "INCOME"/"TRANSFER_IN" = income, others = expenses. */
   getTransactions(params?: {
     since?: string;   // YYYY-MM-DD inclusive
     until?: string;   // YYYY-MM-DD inclusive
-    limit?: number;   // default: 200, max: 1000
   }): Promise<{
     summary: { total: number; count: number; avg: number };
     txns: Array<{ d: string; a: number; m: string; c: string | null }>;
@@ -57,7 +56,7 @@ export function generateApiTypeString(): string {
     data_completeness: number | null;
   }>;
 
-  /** Get spending breakdown by category. Amounts are positive. */
+  /** REQUIRES PRO — Get spending breakdown by category. Prefer getTransactions() with category filtering. */
   getSpending(params?: { months?: number }): Promise<{
     spending: Array<{ category: string; total: number; count: number }>;
     period: { start: string; end: string };

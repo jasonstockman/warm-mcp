@@ -512,21 +512,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_transactions',
       description:
-        'Get transactions and analyze spending. Use for: "How much did I spend on coffee?", "Show my purchases", "What did I buy last month?", "Show my income". Use the `c` (category) field to filter: INCOME and TRANSFER_IN = income, all others = expenses. Amounts: positive = expense, negative = income/deposit.\nReturns: { summary: { total: number; count: number; avg: number }; txns: Array<{ d: string; a: number; m: string; c: string | null }>; more?: number }',
+        'Get transactions and analyze spending. This is the PRIMARY tool for all spending questions — use it instead of get_spending (which requires Pro). Filter results by merchant name `m` or category `c` to answer specific questions. Categories in `c`: INCOME and TRANSFER_IN = income, all others = expenses. Amounts: positive = expense, negative = income/deposit. Call with NO parameters to get all recent transactions.\nReturns: { summary: { total: number; count: number; avg: number }; txns: Array<{ d: string; a: number; m: string; c: string | null }>; more?: number }',
       inputSchema: {
         type: 'object' as const,
         properties: {
           since: {
             type: 'string',
-            description: 'Start date inclusive (YYYY-MM-DD)',
+            description: 'Start date inclusive (YYYY-MM-DD). Omit to get all available transactions.',
           },
           until: {
             type: 'string',
-            description: 'End date inclusive (YYYY-MM-DD)',
-          },
-          limit: {
-            type: 'number',
-            description: 'Max transactions to return (default: 200, max: 1000)',
+            description: 'End date inclusive (YYYY-MM-DD). Omit for no end date filter.',
           },
         },
       },
