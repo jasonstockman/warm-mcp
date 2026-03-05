@@ -64,12 +64,7 @@ async function __run() {
   const warm = {
     getAccounts: () => __callApi('get_accounts', '{}').then(JSON.parse),
     getTransactions: (p) => __callApi('get_transactions', JSON.stringify(p || {})).then(JSON.parse),
-    getRecurring: () => __callApi('get_recurring', '{}').then(JSON.parse),
     getSnapshots: (p) => __callApi('get_snapshots', JSON.stringify(p || {})).then(JSON.parse),
-    getBudgets: () => __callApi('get_budgets', '{}').then(JSON.parse),
-    getGoals: () => __callApi('get_goals', '{}').then(JSON.parse),
-    getHealth: () => __callApi('get_health', '{}').then(JSON.parse),
-    getSpending: (p) => __callApi('get_spending', JSON.stringify(p || {})).then(JSON.parse),
   };
   ${code}
 }

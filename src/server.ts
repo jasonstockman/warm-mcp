@@ -40,38 +40,6 @@ interface Transaction {
   detailed_category?: string | null;
 }
 
-interface ApiAccount {
-  name: string;
-  type: string;
-  balance: number;
-  institution: string;
-}
-
-interface ApiBudget {
-  name: string;
-  amount: number;
-  spent: number;
-  remaining: number;
-  percent_used: number;
-  period: string;
-  status: string;
-  budget_type?: string;
-  rollover_enabled?: boolean;
-  effective_amount?: number;
-}
-
-interface ApiGoal {
-  name: string;
-  target: number;
-  current: number;
-  progress_percent: number;
-  target_date: string | null;
-  status: string;
-  category?: string;
-  monthly_contribution_needed?: number;
-  linked_account?: { name: string } | null;
-}
-
 interface ApiSnapshot {
   snapshot_date?: string;
   d?: string;
@@ -81,29 +49,6 @@ interface ApiSnapshot {
   a?: number;
   total_liabilities?: number;
   l?: number;
-}
-
-interface ApiRecurring {
-  merchant_name?: string;
-  merchant?: string;
-  name?: string;
-  amount?: number;
-  frequency?: string;
-  next_date?: string | null;
-}
-
-interface ApiHealth {
-  score: number | null;
-  label: string | null;
-  pillars: {
-    spend: number;
-    save: number;
-    borrow: number;
-    build: number;
-  } | null;
-  data_completeness?: number | null;
-  message?: string;
-  generated_at?: string;
 }
 
 interface CompactTransaction {
@@ -224,17 +169,8 @@ async function apiRequest(endpoint: string, params: Record<string, string> = {})
   return response.json();
 }
 
-function sizeCheck(data: unknown[], maxSize: number): unknown[] {
-  let output = JSON.stringify(data);
-  if (output.length > maxSize) {
-    const reducedCount = Math.floor(data.length * (maxSize / output.length) * 0.8);
-    return data.slice(0, reducedCount);
-  }
-  return data;
-}
-
 // ============================================
-// EXTRACTED TOOL HANDLERS
+// TOOL HANDLERS
 // ============================================
 
 async function handleGetAccounts(): Promise<unknown> {
@@ -256,10 +192,6 @@ async function handleGetAccounts(): Promise<unknown> {
 async function handleGetTransactions(args?: Record<string, unknown>): Promise<unknown> {
   const since = args?.since ? String(args.since) : undefined;
   const until = args?.until ? String(args.until) : undefined;
-  const parsedLimit = args?.limit ? Number(args.limit) : 200;
-  const requestedLimit = Number.isFinite(parsedLimit)
-    ? Math.max(1, Math.min(Math.floor(parsedLimit), 1000))
-    : 200;
 
   let transactions: Transaction[] = [];
   let cursor: string | undefined;
@@ -292,8 +224,8 @@ async function handleGetTransactions(args?: Record<string, unknown>): Promise<un
 
   const compactTxns = transactions.map(compactTransaction);
   const summary = calculateSummary(compactTxns);
-  const limited = compactTxns.slice(0, requestedLimit);
-  const truncated = compactTxns.length > requestedLimit;
+  const limited = compactTxns.slice(0, 1000);
+  const truncated = compactTxns.length > 1000;
 
   const result: {
     summary: ReturnType<typeof calculateSummary>;
@@ -302,7 +234,7 @@ async function handleGetTransactions(args?: Record<string, unknown>): Promise<un
   } = { summary, txns: limited };
 
   if (truncated) {
-    result.more = compactTxns.length - requestedLimit;
+    result.more = compactTxns.length - 1000;
   }
 
   let output = JSON.stringify(result);
@@ -315,30 +247,6 @@ async function handleGetTransactions(args?: Record<string, unknown>): Promise<un
   return result;
 }
 
-async function handleGetRecurring(): Promise<unknown> {
-  const response = (await apiRequest('/api/subscriptions')) as {
-    recurring_transactions?: ApiRecurring[];
-    generated_at?: string;
-  };
-  const raw = response.recurring_transactions || [];
-
-  const recurring = raw.map((r) => ({
-    merchant: String(r.merchant_name || r.merchant || r.name || 'Unknown'),
-    // Normalize to positive amounts
-    amount: Math.round(Math.abs(Number(r.amount) || 0) * 100) / 100,
-    frequency: String(r.frequency || ''),
-    next_date: r.next_date ?? null,
-  }));
-
-  const checked = sizeCheck(recurring, MAX_RESPONSE_SIZE) as typeof recurring;
-  const result: { recurring: typeof recurring; more?: number } = { recurring: checked };
-  if (checked.length < recurring.length) {
-    result.more = recurring.length - checked.length;
-  }
-
-  return result;
-}
-
 async function handleGetSnapshots(args?: Record<string, unknown>): Promise<unknown> {
   const response = (await apiRequest('/api/snapshots')) as {
     snapshots?: ApiSnapshot[];
@@ -346,9 +254,7 @@ async function handleGetSnapshots(args?: Record<string, unknown>): Promise<unkno
   };
   const snapshots = response.snapshots || [];
 
-  const granularity = (args?.granularity as string) || 'daily';
-  const defaultLimit = granularity === 'daily' ? 30 : 0;
-  const limit = args?.limit ? Number(args.limit) : defaultLimit;
+  const limit = args?.limit ? Number(args.limit) : 30;
   const since = args?.since as string | undefined;
 
   // Normalize snapshot dates (support both snapshot_date and d)
@@ -364,17 +270,6 @@ async function handleGetSnapshots(args?: Record<string, unknown>): Promise<unkno
     filtered = filtered.filter((s) => s.date >= since);
   }
 
-  if (granularity === 'monthly') {
-    const byMonth = new Map<string, typeof normalized[0]>();
-    filtered.forEach((s) => {
-      const month = s.date.substring(0, 7);
-      if (!byMonth.has(month) || s.date > (byMonth.get(month)?.date || '')) {
-        byMonth.set(month, s);
-      }
-    });
-    filtered = Array.from(byMonth.values());
-  }
-
   filtered.sort((a, b) => b.date.localeCompare(a.date));
   if (limit > 0) {
     filtered = filtered.slice(0, limit);
@@ -387,7 +282,7 @@ async function handleGetSnapshots(args?: Record<string, unknown>): Promise<unkno
     l: Math.round(s.total_liabilities * 100) / 100,
   }));
 
-  return { granularity, snapshots: result };
+  return { snapshots: result };
 }
 
 async function handleVerifyKey(): Promise<unknown> {
@@ -403,92 +298,12 @@ async function handleVerifyKey(): Promise<unknown> {
   };
 }
 
-async function handleGetBudgets(): Promise<unknown> {
-  const response = (await apiRequest('/api/budgets')) as {
-    budgets?: ApiBudget[];
-    generated_at?: string;
-  };
-
-  // Filter to only include spec-defined fields
-  const budgets = (response.budgets || []).map((b) => ({
-    name: String(b.name || ''),
-    amount: Number(b.amount || 0),
-    spent: Number(b.spent || 0),
-    remaining: Number(b.remaining || 0),
-    percent_used: Number(b.percent_used || 0),
-    period: String(b.period || ''),
-    status: String(b.status || ''),
-  }));
-
-  return { budgets };
-}
-
-async function handleGetGoals(): Promise<unknown> {
-  const response = (await apiRequest('/api/goals')) as {
-    goals?: ApiGoal[];
-    generated_at?: string;
-  };
-
-  // Filter to only include spec-defined fields
-  const goals = (response.goals || []).map((g) => ({
-    name: String(g.name || ''),
-    target: Number(g.target || 0),
-    current: Number(g.current || 0),
-    progress_percent: Number(g.progress_percent || 0),
-    target_date: g.target_date ?? null,
-    status: String(g.status || ''),
-  }));
-
-  return { goals };
-}
-
-async function handleGetHealth(): Promise<unknown> {
-  const response = (await apiRequest('/api/health')) as ApiHealth;
-
-  return {
-    score: response.score ?? null,
-    label: response.label ?? null,
-    pillars: response.pillars
-      ? {
-          spend: Number(response.pillars.spend || 0),
-          save: Number(response.pillars.save || 0),
-          borrow: Number(response.pillars.borrow || 0),
-          build: Number(response.pillars.build || 0),
-        }
-      : null,
-    data_completeness: response.data_completeness ?? null,
-  };
-}
-
-async function handleGetSpending(args?: Record<string, unknown>): Promise<unknown> {
-  const months = args?.months ? String(args.months) : '6';
-  const response = (await apiRequest('/api/spending', { months })) as {
-    spending?: Array<{ category: string; total: number; count: number }>;
-    period?: { start: string; end: string };
-    generated_at?: string;
-  };
-
-  return {
-    spending: (response.spending || []).map((s) => ({
-      category: String(s.category || ''),
-      total: Math.round(Number(s.total || 0) * 100) / 100,
-      count: Number(s.count || 0),
-    })),
-    period: response.period || { start: '', end: '' },
-  };
-}
-
 // Tool name → handler mapping for sandbox dispatch
 const toolHandlers: Record<string, (args?: Record<string, unknown>) => Promise<unknown>> = {
   get_accounts: handleGetAccounts,
   get_transactions: handleGetTransactions,
-  get_recurring: handleGetRecurring,
   get_snapshots: handleGetSnapshots,
   verify_key: handleVerifyKey,
-  get_budgets: handleGetBudgets,
-  get_goals: handleGetGoals,
-  get_health: handleGetHealth,
-  get_spending: handleGetSpending,
 };
 
 // ============================================
@@ -512,7 +327,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_transactions',
       description:
-        'Get transactions and analyze spending. This is the PRIMARY tool for all spending questions — use it instead of get_spending (which requires Pro). Filter results by merchant name `m` or category `c` to answer specific questions. Categories in `c`: INCOME and TRANSFER_IN = income, all others = expenses. Amounts: positive = expense, negative = income/deposit. Call with NO parameters to get all recent transactions.\nReturns: { summary: { total: number; count: number; avg: number }; txns: Array<{ d: string; a: number; m: string; c: string | null }>; more?: number }',
+        'Get transactions (up to 1000). This is the PRIMARY tool for all spending, income, and merchant questions. Filter results by merchant name `m` or category `c` to answer specific questions. Categories in `c`: INCOME and TRANSFER_IN = income, all others = expenses. Amounts: positive = expense, negative = income/deposit. Call with NO parameters to get all recent transactions.\nReturns: { summary: { total: number; count: number; avg: number }; txns: Array<{ d: string; a: number; m: string; c: string | null }>; more?: number }',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -529,79 +344,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       annotations: { readOnlyHint: true },
     },
     {
-      name: 'get_recurring',
-      description:
-        'Get detected subscriptions and recurring payments. Use for: "What subscriptions do I have?", "Show my monthly bills", "What are my recurring charges?".\nReturns: { recurring: Array<{ merchant: string; amount: number; frequency: string; next_date: string | null }> }',
-      inputSchema: {
-        type: 'object' as const,
-        properties: {},
-      },
-      annotations: { readOnlyHint: true },
-    },
-    {
       name: 'get_snapshots',
       description:
-        'Get net worth history over time. Use for: "How has my net worth changed?", "Show my financial progress", "What was my balance last month?".\nReturns: { granularity: string; snapshots: Array<{ d: string; nw: number; a: number; l: number }> }',
+        'Get daily net worth history. Use for: "How has my net worth changed?", "Show my financial progress", "What was my net worth last month?".\nReturns: { snapshots: Array<{ d: string; nw: number; a: number; l: number }> }',
       inputSchema: {
         type: 'object' as const,
         properties: {
-          granularity: {
-            type: 'string',
-            enum: ['daily', 'monthly'],
-            description: 'daily or monthly (default: daily)',
-          },
           limit: {
             type: 'number',
-            description: 'Number of snapshots (default: 30)',
+            description: 'Number of daily snapshots to return (default: 30)',
           },
           since: {
             type: 'string',
             description: 'Start date (YYYY-MM-DD)',
-          },
-        },
-      },
-      annotations: { readOnlyHint: true },
-    },
-    {
-      name: 'get_budgets',
-      description:
-        'Get all budgets with current spending progress. Use for: "How are my budgets?", "Am I over budget?", "Show my budget status".\nReturns: { budgets: Array<{ name: string; amount: number; spent: number; remaining: number; percent_used: number; period: string; status: string }> }',
-      inputSchema: {
-        type: 'object' as const,
-        properties: {},
-      },
-      annotations: { readOnlyHint: true },
-    },
-    {
-      name: 'get_goals',
-      description:
-        'Get savings goals with progress. Use for: "How are my goals?", "Savings progress", "Am I on track for my goals?".\nReturns: { goals: Array<{ name: string; target: number; current: number; progress_percent: number; target_date: string | null; status: string }> }',
-      inputSchema: {
-        type: 'object' as const,
-        properties: {},
-      },
-      annotations: { readOnlyHint: true },
-    },
-    {
-      name: 'get_health',
-      description:
-        'Get financial health score and pillar breakdown. Use for: "What\'s my financial health?", "How am I doing financially?", "Health score".\nReturns: { score: number | null; label: string | null; pillars: { spend: number; save: number; borrow: number; build: number } | null; data_completeness: number | null }',
-      inputSchema: {
-        type: 'object' as const,
-        properties: {},
-      },
-      annotations: { readOnlyHint: true },
-    },
-    {
-      name: 'get_spending',
-      description:
-        'REQUIRES PRO SUBSCRIPTION — will error for free-tier users. Get spending breakdown by category over a period. Prefer get_transactions with category filtering for free users. Use for: "Where does my money go?", "Spending by category", "Top spending categories".\nReturns: { spending: Array<{ category: string; total: number; count: number }>; period: { start: string; end: string } }',
-      inputSchema: {
-        type: 'object' as const,
-        properties: {
-          months: {
-            type: 'number',
-            description: 'Number of months to analyze (default: 6, max: 24)',
           },
         },
       },
@@ -625,7 +380,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'verify_key',
-      description: 'Check if API key is valid and working.\nReturns: { valid: boolean; user_id: string }',
+      description: 'Check if API key is valid and working.\nReturns: { valid: boolean; status: string }',
       inputSchema: {
         type: 'object' as const,
         properties: {},
