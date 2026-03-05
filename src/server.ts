@@ -3,6 +3,9 @@
  *
  * Provides financial data from the Warm API as MCP tools.
  * Reads API key from WARM_API_KEY env var or ~/.config/warm/api_key.
+ *
+ * Four read-only tools: get_accounts, get_transactions, get_snapshots, verify_key.
+ * The AI client handles all analysis — no sandbox needed.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -11,11 +14,8 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { generateApiTypeString } from './api-types.js';
-import { executeSandboxedCode } from './sandbox.js';
 
 const API_URL = process.env.WARM_API_URL || 'https://warm.io';
-const MAX_RESPONSE_SIZE = 50_000;
 const MAX_TRANSACTION_PAGES = 10;
 const MAX_TRANSACTION_SCAN = 5_000;
 const TRANSACTION_PAGE_SIZE = 200;
@@ -61,10 +61,8 @@ interface CompactTransaction {
 function compactTransaction(t: Transaction): CompactTransaction {
   return {
     d: t.date || '',
-    // Positive = expense, negative = income/deposit (Plaid convention)
     a: t.amount ? Math.round(t.amount * 100) / 100 : 0,
     m: t.merchant_name || t.name || 'Unknown',
-    // Include category (null if not set)
     c: t.primary_category ?? null,
   };
 }
@@ -157,7 +155,6 @@ async function apiRequest(endpoint: string, params: Record<string, string> = {})
     if (errorMessages[response.status]) {
       throw new Error(errorMessages[response.status]);
     }
-    // Read the actual error message from the API response body
     let detail = `HTTP ${response.status}`;
     try {
       const body = (await response.json()) as { error?: string };
@@ -204,7 +201,6 @@ async function handleGetTransactions(args?: Record<string, unknown>): Promise<un
     const params: Record<string, string> = {
       limit: String(TRANSACTION_PAGE_SIZE),
     };
-    // API rejects last_knowledge + cursor together; only use last_knowledge on first page
     if (since && !cursor) params.last_knowledge = since;
     if (cursor) params.cursor = cursor;
 
@@ -247,7 +243,6 @@ async function handleGetSnapshots(args?: Record<string, unknown>): Promise<unkno
   const limit = args?.limit ? Number(args.limit) : 30;
   const since = args?.since as string | undefined;
 
-  // Normalize snapshot dates (support both snapshot_date and d)
   const normalized = snapshots.map((s) => ({
     date: s.snapshot_date || s.d || '',
     net_worth: s.net_worth ?? s.nw ?? 0,
@@ -288,7 +283,6 @@ async function handleVerifyKey(): Promise<unknown> {
   };
 }
 
-// Tool name → handler mapping for sandbox dispatch
 const toolHandlers: Record<string, (args?: Record<string, unknown>) => Promise<unknown>> = {
   get_accounts: handleGetAccounts,
   get_transactions: handleGetTransactions,
@@ -300,14 +294,14 @@ const toolHandlers: Record<string, (args?: Record<string, unknown>) => Promise<u
 // SERVER SETUP
 // ============================================
 
-const server = new Server({ name: 'warm', version: '2.0.0' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'warm', version: '3.0.0' }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'get_accounts',
       description:
-        'Get all connected bank accounts with balances. Use for: "What accounts do I have?", "What is my checking balance?", "Show my credit cards".\nReturns: { accounts: Array<{ name: string; type: string; balance: number; institution: string }> }',
+        'Get all connected bank accounts with current balances.\n\nReturns: { accounts: Array<{ name: string; type: string; balance: number; institution: string }> }\n\nAccount types: depository (checking/savings), credit, loan, investment, other.',
       inputSchema: {
         type: 'object' as const,
         properties: {},
@@ -317,7 +311,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_transactions',
       description:
-        'Get transactions with pagination. PRIMARY tool for spending, income, and merchant questions. Filter by merchant `m` or category `c`. Categories: INCOME/TRANSFER_IN = income, others = expenses. Amounts: positive = expense, negative = income. Summary always covers the FULL date range; txns are paginated. Use offset to get more pages.\nReturns: { summary: { total: number; count: number; avg: number }; txns: Array<{ d: string; a: number; m: string; c: string | null }>; total: number; has_more: boolean }',
+        'Get transactions with date filtering and pagination. Returns a summary of the FULL date range plus a paginated slice of individual transactions.\n\nAmounts: positive = expense/debit, negative = income/credit (Plaid convention).\nCategories in field `c`: INCOME, TRANSFER_IN = income. FOOD_AND_DRINK, TRANSPORTATION, ENTERTAINMENT, GENERAL_MERCHANDISE, RENT_AND_UTILITIES, LOAN_PAYMENTS, etc. = expenses.\n\nReturns: { summary: { total: number; count: number; avg: number }; txns: Array<{ d: string; a: number; m: string; c: string | null }>; total: number; has_more: boolean }\n\nCall multiple times with increasing offset to paginate. The summary is always computed over ALL matching transactions regardless of limit/offset.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -331,11 +325,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           limit: {
             type: 'number',
-            description: 'Max transactions to return per page (default 200, max 500). Use smaller values to reduce response size.',
+            description: 'Max transactions per page (default 200, max 500).',
           },
           offset: {
             type: 'number',
-            description: 'Number of transactions to skip (default 0). Use with limit to paginate through results.',
+            description: 'Skip N transactions for pagination (default 0).',
           },
         },
       },
@@ -344,41 +338,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_snapshots',
       description:
-        'Get daily net worth history. Use for: "How has my net worth changed?", "Show my financial progress", "What was my net worth last month?".\nReturns: { snapshots: Array<{ d: string; nw: number; a: number; l: number }> }',
+        'Get daily net worth snapshots over time.\n\nReturns: { snapshots: Array<{ d: string; nw: number; a: number; l: number }> }\n\nFields: d = date, nw = net worth, a = total assets, l = total liabilities. Sorted newest first.',
       inputSchema: {
         type: 'object' as const,
         properties: {
           limit: {
             type: 'number',
-            description: 'Number of daily snapshots to return (default: 30)',
+            description: 'Max snapshots to return (default 30).',
           },
           since: {
             type: 'string',
-            description: 'Start date (YYYY-MM-DD)',
+            description: 'Start date inclusive (YYYY-MM-DD).',
           },
         },
-      },
-      annotations: { readOnlyHint: true },
-    },
-    {
-      name: 'run_analysis',
-      description:
-        `Run JavaScript code that calls warm.* functions for complex multi-step analysis. Use when a query requires combining data from multiple tools, custom calculations, or comparisons that would take 3+ tool calls.\n\nAvailable API:\n${generateApiTypeString()}\n\nUse console.log() to output results. Example:\nconst [accounts, txns] = await Promise.all([warm.getAccounts(), warm.getTransactions({ since: "2024-01-01" })]);\nconst total = txns.txns.reduce((s, t) => s + t.a, 0);\nconsole.log(JSON.stringify({ accounts: accounts.accounts.length, totalSpent: total }));`,
-      inputSchema: {
-        type: 'object' as const,
-        properties: {
-          code: {
-            type: 'string',
-            description: 'JavaScript code to execute. Use warm.* functions and console.log() for output.',
-          },
-        },
-        required: ['code'],
       },
       annotations: { readOnlyHint: true },
     },
     {
       name: 'verify_key',
-      description: 'Check if API key is valid and working.\nReturns: { valid: boolean; status: string }',
+      description: 'Check if the API key is valid.\n\nReturns: { valid: boolean; status: string }',
       inputSchema: {
         type: 'object' as const,
         properties: {},
@@ -392,33 +370,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   try {
-    // Handle run_analysis separately (sandbox execution)
-    if (name === 'run_analysis') {
-      const code = args?.code ? String(args.code) : '';
-      if (!code) {
-        throw new Error('Code parameter is required');
-      }
-
-      const callApi = async (tool: string, params: Record<string, unknown>): Promise<unknown> => {
-        const handler = toolHandlers[tool];
-        if (!handler) {
-          throw new Error(`Unknown tool: ${tool}`);
-        }
-        return handler(params);
-      };
-
-      const result = await executeSandboxedCode(code, callApi);
-      const text = result.error
-        ? `Output:\n${result.output}\n\nError: ${result.error}`
-        : result.output;
-
-      return {
-        content: [{ type: 'text', text }],
-        isError: !!result.error,
-      };
-    }
-
-    // Standard tool dispatch
     const handler = toolHandlers[name];
     if (!handler) {
       throw new Error(`Unknown tool: ${name}`);
