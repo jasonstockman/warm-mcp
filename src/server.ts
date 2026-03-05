@@ -101,6 +101,7 @@ interface ApiHealth {
     borrow: number;
     build: number;
   } | null;
+  data_completeness?: number | null;
   message?: string;
   generated_at?: string;
 }
@@ -445,6 +446,7 @@ async function handleGetHealth(): Promise<unknown> {
           build: Number(response.pillars.build || 0),
         }
       : null,
+    data_completeness: response.data_completeness ?? null,
   };
 }
 
@@ -577,7 +579,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_health',
       description:
-        'Get financial health score and pillar breakdown. Use for: "What\'s my financial health?", "How am I doing financially?", "Health score".\nReturns: { score: number | null; label: string | null; pillars: { spend: number; save: number; borrow: number; build: number } | null }',
+        'Get financial health score and pillar breakdown. Use for: "What\'s my financial health?", "How am I doing financially?", "Health score".\nReturns: { score: number | null; label: string | null; pillars: { spend: number; save: number; borrow: number; build: number } | null; data_completeness: number | null }',
       inputSchema: {
         type: 'object' as const,
         properties: {},

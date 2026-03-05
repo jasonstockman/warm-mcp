@@ -54,6 +54,7 @@ export function generateApiTypeString(): string {
     score: number | null;
     label: string | null;
     pillars: { spend: number; save: number; borrow: number; build: number } | null;
+    data_completeness: number | null;
   }>;
 
   /** Get spending breakdown by category. Amounts are positive. */
