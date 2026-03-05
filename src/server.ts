@@ -192,6 +192,8 @@ async function handleGetAccounts(): Promise<unknown> {
 async function handleGetTransactions(args?: Record<string, unknown>): Promise<unknown> {
   const since = args?.since ? String(args.since) : undefined;
   const until = args?.until ? String(args.until) : undefined;
+  const limit = Math.min(Math.max(args?.limit ? Number(args.limit) : 200, 1), 500);
+  const offset = Math.max(args?.offset ? Number(args.offset) : 0, 0);
 
   let transactions: Transaction[] = [];
   let cursor: string | undefined;
@@ -224,27 +226,15 @@ async function handleGetTransactions(args?: Record<string, unknown>): Promise<un
 
   const compactTxns = transactions.map(compactTransaction);
   const summary = calculateSummary(compactTxns);
-  const limited = compactTxns.slice(0, 1000);
-  const truncated = compactTxns.length > 1000;
+  const total = compactTxns.length;
+  const page = compactTxns.slice(offset, offset + limit);
 
-  const result: {
-    summary: ReturnType<typeof calculateSummary>;
-    txns: CompactTransaction[];
-    more?: number;
-  } = { summary, txns: limited };
-
-  if (truncated) {
-    result.more = compactTxns.length - 1000;
-  }
-
-  let output = JSON.stringify(result);
-  if (output.length > MAX_RESPONSE_SIZE) {
-    const reducedCount = Math.floor(limited.length * (MAX_RESPONSE_SIZE / output.length) * 0.8);
-    result.txns = limited.slice(0, reducedCount);
-    result.more = compactTxns.length - reducedCount;
-  }
-
-  return result;
+  return {
+    summary,
+    txns: page,
+    total,
+    has_more: offset + limit < total,
+  };
 }
 
 async function handleGetSnapshots(args?: Record<string, unknown>): Promise<unknown> {
@@ -327,7 +317,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_transactions',
       description:
-        'Get transactions (up to 1000). This is the PRIMARY tool for all spending, income, and merchant questions. Filter results by merchant name `m` or category `c` to answer specific questions. Categories in `c`: INCOME and TRANSFER_IN = income, all others = expenses. Amounts: positive = expense, negative = income/deposit. Call with NO parameters to get all recent transactions.\nReturns: { summary: { total: number; count: number; avg: number }; txns: Array<{ d: string; a: number; m: string; c: string | null }>; more?: number }',
+        'Get transactions with pagination. PRIMARY tool for spending, income, and merchant questions. Filter by merchant `m` or category `c`. Categories: INCOME/TRANSFER_IN = income, others = expenses. Amounts: positive = expense, negative = income. Summary always covers the FULL date range; txns are paginated. Use offset to get more pages.\nReturns: { summary: { total: number; count: number; avg: number }; txns: Array<{ d: string; a: number; m: string; c: string | null }>; total: number; has_more: boolean }',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -338,6 +328,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           until: {
             type: 'string',
             description: 'End date inclusive (YYYY-MM-DD). Omit for no end date filter.',
+          },
+          limit: {
+            type: 'number',
+            description: 'Max transactions to return per page (default 200, max 500). Use smaller values to reduce response size.',
+          },
+          offset: {
+            type: 'number',
+            description: 'Number of transactions to skip (default 0). Use with limit to paginate through results.',
           },
         },
       },

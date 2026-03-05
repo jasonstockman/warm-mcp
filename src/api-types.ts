@@ -13,14 +13,17 @@ export function generateApiTypeString(): string {
     accounts: Array<{ name: string; type: string; balance: number; institution: string }>;
   }>;
 
-  /** Get transactions (up to 1000). Amounts: positive = expense, negative = income. Category c: "INCOME"/"TRANSFER_IN" = income, others = expenses. */
+  /** Get transactions with pagination. Amounts: positive = expense, negative = income. Category c: "INCOME"/"TRANSFER_IN" = income, others = expenses. Summary covers full date range; txns are paginated. */
   getTransactions(params?: {
     since?: string;   // YYYY-MM-DD inclusive
     until?: string;   // YYYY-MM-DD inclusive
+    limit?: number;   // max per page (default 200, max 500)
+    offset?: number;  // skip N transactions (default 0)
   }): Promise<{
     summary: { total: number; count: number; avg: number };
     txns: Array<{ d: string; a: number; m: string; c: string | null }>;
-    more?: number;
+    total: number;
+    has_more: boolean;
   }>;
 
   /** Get daily net worth history */
