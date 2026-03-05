@@ -209,7 +209,16 @@ async function apiRequest(endpoint: string, params: Record<string, string> = {})
       403: 'Pro subscription required. Upgrade at https://warm.io/settings',
       429: 'Rate limit exceeded. Try again in a few minutes.',
     };
-    throw new Error(errorMessages[response.status] || `HTTP ${response.status}`);
+    if (errorMessages[response.status]) {
+      throw new Error(errorMessages[response.status]);
+    }
+    // Read the actual error message from the API response body
+    let detail = `HTTP ${response.status}`;
+    try {
+      const body = (await response.json()) as { error?: string };
+      if (body?.error) detail = body.error;
+    } catch { /* ignore parse failures */ }
+    throw new Error(detail);
   }
 
   return response.json();
@@ -261,7 +270,8 @@ async function handleGetTransactions(args?: Record<string, unknown>): Promise<un
     const params: Record<string, string> = {
       limit: String(TRANSACTION_PAGE_SIZE),
     };
-    if (since) params.last_knowledge = since;
+    // API rejects last_knowledge + cursor together; only use last_knowledge on first page
+    if (since && !cursor) params.last_knowledge = since;
     if (cursor) params.cursor = cursor;
 
     const response = (await apiRequest('/api/transactions', params)) as {
@@ -589,7 +599,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_spending',
       description:
-        'Get spending breakdown by category over a period. Use for: "Where does my money go?", "Spending by category", "Top spending categories".\nReturns: { spending: Array<{ category: string; total: number; count: number }>; period: { start: string; end: string } }',
+        'REQUIRES PRO SUBSCRIPTION — will error for free-tier users. Get spending breakdown by category over a period. Prefer get_transactions with category filtering for free users. Use for: "Where does my money go?", "Spending by category", "Top spending categories".\nReturns: { spending: Array<{ category: string; total: number; count: number }>; period: { start: string; end: string } }',
       inputSchema: {
         type: 'object' as const,
         properties: {
