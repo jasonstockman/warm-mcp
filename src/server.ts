@@ -19,7 +19,7 @@ const API_URL = process.env.WARM_API_URL || 'https://warm.io';
 const MAX_TRANSACTION_PAGES = 10;
 const MAX_TRANSACTION_SCAN = 5_000;
 const TRANSACTION_PAGE_SIZE = 200;
-const TRANSACTION_CACHE_TTL_MS = 60_000; // 60s cache for paginated reads
+const TRANSACTION_CACHE_TTL_MS = 600_000; // 10min cache for paginated reads
 const REQUEST_TIMEOUT_MS = (() => {
   const raw = Number(process.env.WARM_API_TIMEOUT_MS || 10_000);
   return Number.isFinite(raw) && raw > 0 ? raw : 10_000;
@@ -319,7 +319,7 @@ const toolHandlers: Record<string, (args?: Record<string, unknown>) => Promise<u
 // SERVER SETUP
 // ============================================
 
-const server = new Server({ name: 'warm', version: '3.0.0' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'warm', version: '3.0.2' }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
