@@ -19,12 +19,21 @@ const API_URL = process.env.WARM_API_URL || 'https://warm.io';
 const MAX_TRANSACTION_PAGES = 10;
 const MAX_TRANSACTION_SCAN = 5_000;
 const TRANSACTION_PAGE_SIZE = 200;
+const TRANSACTION_CACHE_TTL_MS = 60_000; // 60s cache for paginated reads
 const REQUEST_TIMEOUT_MS = (() => {
   const raw = Number(process.env.WARM_API_TIMEOUT_MS || 10_000);
   return Number.isFinite(raw) && raw > 0 ? raw : 10_000;
 })();
 
 let cachedApiKey: string | null | undefined;
+
+// In-memory transaction cache to avoid re-fetching on paginated reads
+let txnCache: {
+  key: string;
+  transactions: CompactTransaction[];
+  summary: ReturnType<typeof calculateSummary>;
+  fetchedAt: number;
+} | null = null;
 
 // ============================================
 // API RESPONSE TYPE DEFINITIONS
@@ -186,11 +195,14 @@ async function handleGetAccounts(): Promise<unknown> {
   };
 }
 
-async function handleGetTransactions(args?: Record<string, unknown>): Promise<unknown> {
-  const since = args?.since ? String(args.since) : undefined;
-  const until = args?.until ? String(args.until) : undefined;
-  const limit = Math.min(Math.max(args?.limit ? Number(args.limit) : 200, 1), 500);
-  const offset = Math.max(args?.offset ? Number(args.offset) : 0, 0);
+async function fetchAllTransactions(since?: string, until?: string): Promise<{
+  transactions: CompactTransaction[];
+  summary: ReturnType<typeof calculateSummary>;
+}> {
+  const cacheKey = `${since || ''}|${until || ''}`;
+  if (txnCache && txnCache.key === cacheKey && Date.now() - txnCache.fetchedAt < TRANSACTION_CACHE_TTL_MS) {
+    return { transactions: txnCache.transactions, summary: txnCache.summary };
+  }
 
   let transactions: Transaction[] = [];
   let cursor: string | undefined;
@@ -222,6 +234,19 @@ async function handleGetTransactions(args?: Record<string, unknown>): Promise<un
 
   const compactTxns = transactions.map(compactTransaction);
   const summary = calculateSummary(compactTxns);
+
+  txnCache = { key: cacheKey, transactions: compactTxns, summary, fetchedAt: Date.now() };
+
+  return { transactions: compactTxns, summary };
+}
+
+async function handleGetTransactions(args?: Record<string, unknown>): Promise<unknown> {
+  const since = args?.since ? String(args.since) : undefined;
+  const until = args?.until ? String(args.until) : undefined;
+  const limit = Math.min(Math.max(args?.limit ? Number(args.limit) : 500, 1), 1000);
+  const offset = Math.max(args?.offset ? Number(args.offset) : 0, 0);
+
+  const { transactions: compactTxns, summary } = await fetchAllTransactions(since, until);
   const total = compactTxns.length;
   const page = compactTxns.slice(offset, offset + limit);
 
@@ -325,7 +350,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           limit: {
             type: 'number',
-            description: 'Max transactions per page (default 200, max 500).',
+            description: 'Max transactions per page (default 500, max 1000).',
           },
           offset: {
             type: 'number',
