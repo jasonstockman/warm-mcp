@@ -46,8 +46,8 @@ The MCP server starts automatically when your client needs it — you never run 
 |------|-------------|
 | `get_accounts` | List all connected bank accounts with balances |
 | `get_transactions` | Get transactions with date/limit filters |
-| `get_recurring` | Show subscriptions and recurring payments |
-| `get_snapshots` | Net worth history (daily or monthly) |
+| `get_recurring` | Show subscriptions and recurring income/expenses |
+| `get_snapshots` | Daily net worth history |
 | `verify_key` | Check if API key is valid |
 
 ## Security

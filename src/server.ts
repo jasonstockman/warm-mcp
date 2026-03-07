@@ -4,7 +4,7 @@
  * Provides financial data from the Warm API as MCP tools.
  * Reads API key from WARM_API_KEY env var or ~/.config/warm/api_key.
  *
- * Four read-only tools: get_accounts, get_transactions, get_snapshots, verify_key.
+ * Five read-only tools: get_accounts, get_transactions, get_recurring, get_snapshots, verify_key.
  * The AI client handles all analysis — no sandbox needed.
  */
 
@@ -49,6 +49,12 @@ interface Transaction {
   detailed_category?: string | null;
 }
 
+interface ApiAccount {
+  name?: string | null;
+  type?: string | null;
+  current_balance?: number | null;
+}
+
 interface ApiSnapshot {
   snapshot_date?: string;
   d?: string;
@@ -58,6 +64,17 @@ interface ApiSnapshot {
   a?: number;
   total_liabilities?: number;
   l?: number;
+}
+
+interface ApiRecurring {
+  average_amount?: number | null;
+  description?: string | null;
+  frequency?: string | null;
+  is_active?: boolean | null;
+  last_amount?: number | null;
+  merchant_name?: string | null;
+  next_date?: string | null;
+  stream_type?: string | null;
 }
 
 interface CompactTransaction {
@@ -181,17 +198,16 @@ async function apiRequest(endpoint: string, params: Record<string, string> = {})
 
 async function handleGetAccounts(): Promise<unknown> {
   const response = (await apiRequest('/api/accounts')) as {
-    accounts?: Array<{
-      name: string;
-      type: string;
-      balance: number;
-      institution: string;
-    }>;
+    accounts?: ApiAccount[];
     generated_at?: string;
   };
 
   return {
-    accounts: response.accounts || [],
+    accounts: (response.accounts || []).map((account) => ({
+      name: account.name || 'Unknown Account',
+      type: account.type || 'other',
+      balance: Math.round((account.current_balance ?? 0) * 100) / 100,
+    })),
   };
 }
 
@@ -259,14 +275,14 @@ async function handleGetTransactions(args?: Record<string, unknown>): Promise<un
 }
 
 async function handleGetSnapshots(args?: Record<string, unknown>): Promise<unknown> {
-  const response = (await apiRequest('/api/snapshots')) as {
+  const since = args?.since ? String(args.since) : undefined;
+  const response = (await apiRequest('/api/snapshots', since ? { since } : {})) as {
     snapshots?: ApiSnapshot[];
     generated_at?: string;
   };
   const snapshots = response.snapshots || [];
 
   const limit = args?.limit ? Number(args.limit) : 30;
-  const since = args?.since as string | undefined;
 
   const normalized = snapshots.map((s) => ({
     date: s.snapshot_date || s.d || '',
@@ -295,6 +311,27 @@ async function handleGetSnapshots(args?: Record<string, unknown>): Promise<unkno
   return { snapshots: result };
 }
 
+async function handleGetRecurring(args?: Record<string, unknown>): Promise<unknown> {
+  const since = args?.since ? String(args.since) : undefined;
+  const limit = Math.min(Math.max(args?.limit ? Number(args.limit) : 100, 1), 500);
+
+  const response = (await apiRequest('/api/subscriptions', since ? { since } : {})) as {
+    recurring_transactions?: ApiRecurring[];
+    generated_at?: string;
+  };
+
+  const recurring = (response.recurring_transactions || []).slice(0, limit).map((stream) => ({
+    merchant: stream.merchant_name || stream.description || 'Unknown',
+    amount: Math.round(Math.abs(stream.average_amount ?? stream.last_amount ?? 0) * 100) / 100,
+    frequency: stream.frequency || 'UNKNOWN',
+    next_date: stream.next_date || null,
+    type: stream.stream_type || null,
+    active: stream.is_active !== false,
+  }));
+
+  return { recurring };
+}
+
 async function handleVerifyKey(): Promise<unknown> {
   const response = (await apiRequest('/api/verify')) as {
     valid?: boolean;
@@ -311,6 +348,7 @@ async function handleVerifyKey(): Promise<unknown> {
 const toolHandlers: Record<string, (args?: Record<string, unknown>) => Promise<unknown>> = {
   get_accounts: handleGetAccounts,
   get_transactions: handleGetTransactions,
+  get_recurring: handleGetRecurring,
   get_snapshots: handleGetSnapshots,
   verify_key: handleVerifyKey,
 };
@@ -319,14 +357,14 @@ const toolHandlers: Record<string, (args?: Record<string, unknown>) => Promise<u
 // SERVER SETUP
 // ============================================
 
-const server = new Server({ name: 'warm', version: '3.0.2' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'warm', version: '3.0.3' }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'get_accounts',
       description:
-        'Get all connected bank accounts with current balances.\n\nReturns: { accounts: Array<{ name: string; type: string; balance: number; institution: string }> }\n\nAccount types: depository (checking/savings), credit, loan, investment, other.',
+        'Get all connected bank accounts with current balances.\n\nReturns: { accounts: Array<{ name: string; type: string; balance: number }> }\n\nAccount types: depository (checking/savings), credit, loan, investment, other.',
       inputSchema: {
         type: 'object' as const,
         properties: {},
@@ -355,6 +393,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           offset: {
             type: 'number',
             description: 'Skip N transactions for pagination (default 0).',
+          },
+        },
+      },
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'get_recurring',
+      description:
+        'Get recurring subscriptions and income streams.\n\nReturns: { recurring: Array<{ merchant: string; amount: number; frequency: string; next_date: string | null; type: string | null; active: boolean }> }',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          since: {
+            type: 'string',
+            description: 'Start date inclusive (YYYY-MM-DD). Omit to get all recurring streams.',
+          },
+          limit: {
+            type: 'number',
+            description: 'Max recurring streams to return (default 100, max 500).',
           },
         },
       },
