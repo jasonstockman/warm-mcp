@@ -4,7 +4,8 @@
  * Provides financial data from the Warm API as MCP tools.
  * Reads API key from WARM_API_KEY env var or ~/.config/warm/api_key.
  *
- * Five read-only tools: get_accounts, get_transactions, get_recurring, get_snapshots, verify_key.
+ * Eight read-only tools: get_accounts, get_transactions, get_recurring, get_snapshots,
+ * get_budgets, get_goals, get_health, verify_key.
  * The AI client handles all analysis — no sandbox needed.
  */
 
@@ -197,7 +198,7 @@ async function apiRequest(endpoint: string, params: Record<string, string> = {})
 // ============================================
 
 async function handleGetAccounts(): Promise<unknown> {
-  const response = (await apiRequest('/api/accounts')) as {
+  const response = (await apiRequest('/api/export', { dataset: 'accounts' })) as {
     accounts?: ApiAccount[];
     generated_at?: string;
   };
@@ -211,6 +212,8 @@ async function handleGetAccounts(): Promise<unknown> {
   };
 }
 
+// TODO: Migrate to /api/export?dataset=transactions when the unified export
+// endpoint supports cursor-based pagination. Currently uses legacy /api/transactions.
 async function fetchAllTransactions(since?: string, until?: string): Promise<{
   transactions: CompactTransaction[];
   summary: ReturnType<typeof calculateSummary>;
@@ -276,7 +279,7 @@ async function handleGetTransactions(args?: Record<string, unknown>): Promise<un
 
 async function handleGetSnapshots(args?: Record<string, unknown>): Promise<unknown> {
   const since = args?.since ? String(args.since) : undefined;
-  const response = (await apiRequest('/api/snapshots', since ? { since } : {})) as {
+  const response = (await apiRequest('/api/export', { dataset: 'snapshots', ...(since ? { since } : {}) })) as {
     snapshots?: ApiSnapshot[];
     generated_at?: string;
   };
@@ -315,7 +318,7 @@ async function handleGetRecurring(args?: Record<string, unknown>): Promise<unkno
   const since = args?.since ? String(args.since) : undefined;
   const limit = Math.min(Math.max(args?.limit ? Number(args.limit) : 100, 1), 500);
 
-  const response = (await apiRequest('/api/subscriptions', since ? { since } : {})) as {
+  const response = (await apiRequest('/api/export', { dataset: 'recurring', ...(since ? { since } : {}) })) as {
     recurring_transactions?: ApiRecurring[];
     generated_at?: string;
   };
@@ -345,11 +348,106 @@ async function handleVerifyKey(): Promise<unknown> {
   };
 }
 
+interface ApiBudget {
+  name?: string | null;
+  amount?: number | null;
+  spent?: number | null;
+  remaining?: number | null;
+  percent_used?: number | null;
+  period?: string | null;
+  status?: string | null;
+  budget_type?: string | null;
+  rollover_enabled?: boolean | null;
+  effective_amount?: number | null;
+}
+
+interface ApiGoal {
+  name?: string | null;
+  target?: number | null;
+  current?: number | null;
+  progress_percent?: number | null;
+  target_date?: string | null;
+  status?: string | null;
+  category?: string | null;
+  monthly_contribution_needed?: number | null;
+  linked_account?: string | null;
+}
+
+interface ApiHealth {
+  score?: number | null;
+  label?: string | null;
+  pillars?: {
+    spend?: number | null;
+    save?: number | null;
+    borrow?: number | null;
+    build?: number | null;
+  } | null;
+  data_completeness?: number | null;
+  message?: string | null;
+  generated_at?: string;
+}
+
+async function handleGetBudgets(): Promise<unknown> {
+  const response = (await apiRequest('/api/export', { dataset: 'budgets' })) as {
+    budgets?: ApiBudget[];
+    generated_at?: string;
+  };
+
+  return {
+    budgets: (response.budgets || []).map((b) => ({
+      name: b.name || 'Unnamed Budget',
+      amount: Math.round((b.amount ?? 0) * 100) / 100,
+      spent: Math.round((b.spent ?? 0) * 100) / 100,
+      remaining: Math.round((b.remaining ?? 0) * 100) / 100,
+      percent_used: Math.round((b.percent_used ?? 0) * 100) / 100,
+      period: b.period || 'monthly',
+      status: b.status || null,
+    })),
+  };
+}
+
+async function handleGetGoals(): Promise<unknown> {
+  const response = (await apiRequest('/api/export', { dataset: 'goals' })) as {
+    goals?: ApiGoal[];
+    generated_at?: string;
+  };
+
+  return {
+    goals: (response.goals || []).map((g) => ({
+      name: g.name || 'Unnamed Goal',
+      target: Math.round((g.target ?? 0) * 100) / 100,
+      current: Math.round((g.current ?? 0) * 100) / 100,
+      progress_percent: Math.round((g.progress_percent ?? 0) * 100) / 100,
+      target_date: g.target_date || null,
+      status: g.status || null,
+      category: g.category || null,
+      monthly_contribution_needed: g.monthly_contribution_needed != null
+        ? Math.round(g.monthly_contribution_needed * 100) / 100
+        : null,
+    })),
+  };
+}
+
+async function handleGetHealth(): Promise<unknown> {
+  const response = (await apiRequest('/api/export', { dataset: 'health' })) as ApiHealth;
+
+  return {
+    score: response.score ?? null,
+    label: response.label || null,
+    pillars: response.pillars || null,
+    data_completeness: response.data_completeness ?? null,
+    ...(response.message ? { message: response.message } : {}),
+  };
+}
+
 const toolHandlers: Record<string, (args?: Record<string, unknown>) => Promise<unknown>> = {
   get_accounts: handleGetAccounts,
   get_transactions: handleGetTransactions,
   get_recurring: handleGetRecurring,
   get_snapshots: handleGetSnapshots,
+  get_budgets: handleGetBudgets,
+  get_goals: handleGetGoals,
+  get_health: handleGetHealth,
   verify_key: handleVerifyKey,
 };
 
@@ -433,6 +531,36 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: 'Start date inclusive (YYYY-MM-DD).',
           },
         },
+      },
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'get_budgets',
+      description:
+        'Get all budgets with spending progress.\n\nReturns: { budgets: Array<{ name: string; amount: number; spent: number; remaining: number; percent_used: number; period: string; status: string | null }> }',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {},
+      },
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'get_goals',
+      description:
+        'Get all savings goals with progress.\n\nReturns: { goals: Array<{ name: string; target: number; current: number; progress_percent: number; target_date: string | null; status: string | null; category: string | null; monthly_contribution_needed: number | null }> }',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {},
+      },
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'get_health',
+      description:
+        'Get financial health score and pillar breakdown.\n\nReturns: { score: number | null; label: string | null; pillars: { spend: number; save: number; borrow: number; build: number } | null; data_completeness: number | null }',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {},
       },
       annotations: { readOnlyHint: true },
     },
