@@ -227,7 +227,6 @@ Returns:
       "save": 23,
       "borrow": 15,
       "build": 20
-    }
     },
     "message": null
   }
