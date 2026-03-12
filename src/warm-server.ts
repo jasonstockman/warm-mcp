@@ -12,32 +12,30 @@ import {
   getTransactionsOutputSchema,
   verifyKeyOutputSchema,
   type Account,
-  type FinancialPosition,
   type GetAccountsOutput,
   type GetFinancialStateOutput,
   type GetTransactionsInput,
   type GetTransactionsOutput,
-  type TransactionSummary,
   type VerifyKeyOutput,
 } from './schemas.js';
 import type {
-  NormalizedTransaction,
   RegisteredWarmTools,
-  TransactionCursorPosition,
-  TransactionSummaryCacheEntry,
   WarmApiAccount,
   WarmApiAccountsResponse,
+  WarmApiBudgetsResponse,
   WarmApiClient,
   WarmApiClientOptions,
+  WarmApiGoal,
+  WarmApiGoalsResponse,
   WarmApiHealthResponse,
+  WarmApiRecurring,
+  WarmApiRecurringResponse,
   WarmApiSnapshot,
   WarmApiSnapshotsResponse,
-  WarmApiTransaction,
   WarmApiTransactionsResponse,
   WarmApiVerifyResponse,
   WarmServerOptions,
   WarmToolRegistrationTarget,
-  WarmTransactionCursorPayload,
 } from './types.js';
 
 const DEFAULT_API_URL = process.env.WARM_API_URL || 'https://warm.io';
@@ -45,24 +43,6 @@ const DEFAULT_REQUEST_TIMEOUT_MS = (() => {
   const raw = Number(process.env.WARM_API_TIMEOUT_MS || 10_000);
   return Number.isFinite(raw) && raw > 0 ? raw : 10_000;
 })();
-
-const TRANSACTION_API_PAGE_SIZE = 500;
-const SUMMARY_CACHE_TTL_MS = 600_000;
-const SUMMARY_SCAN_PAGE_LIMIT = 40;
-const SUMMARY_SCAN_TRANSACTION_LIMIT = 20_000;
-const CURSOR_VERSION = 1 as const;
-const HEALTH_LABELS = new Set([
-  'Critical',
-  'Urgent',
-  'Needs Attention',
-  'Good',
-  'Strong',
-]);
-
-export const WARM_SERVER_INFO = {
-  name: 'warm',
-  version: '3.0.3',
-} as const;
 
 const READ_ONLY_TOOL_ANNOTATIONS: ToolAnnotations = {
   readOnlyHint: true,
@@ -72,30 +52,26 @@ const READ_ONLY_TOOL_ANNOTATIONS: ToolAnnotations = {
 };
 
 let cachedApiKey: string | null | undefined;
-const transactionSummaryCache = new Map<string, TransactionSummaryCacheEntry>();
+
+export const WARM_SERVER_INFO = {
+  name: 'warm',
+  version: getPackageVersion(),
+} as const;
+
+export const API_URL = DEFAULT_API_URL;
+
+function getPackageVersion(): string {
+  try {
+    const packageJson = fs.readFileSync(new URL('../package.json', import.meta.url), 'utf-8');
+    const parsed = JSON.parse(packageJson) as { version?: string };
+    return parsed.version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
 
 function roundMoney(value: number): number {
   return Math.round(value * 100) / 100;
-}
-
-function getApiKey(): string | null {
-  if (cachedApiKey !== undefined) {
-    return cachedApiKey;
-  }
-
-  if (process.env.WARM_API_KEY) {
-    cachedApiKey = process.env.WARM_API_KEY;
-    return cachedApiKey;
-  }
-
-  const configPath = path.join(os.homedir(), '.config', 'warm', 'api_key');
-  try {
-    cachedApiKey = fs.readFileSync(configPath, 'utf-8').trim();
-  } catch {
-    cachedApiKey = null;
-  }
-
-  return cachedApiKey;
 }
 
 function getRequestSignal(timeoutMs: number): AbortSignal {
@@ -121,122 +97,109 @@ function normalizeAccountType(rawType: string | null | undefined): Account['type
   }
 }
 
-function normalizeAccount(account: WarmApiAccount): Account {
+function normalizeAccount(account: WarmApiAccount): GetAccountsOutput['accounts'][number] {
   return {
     name: account.name || 'Unknown Account',
     type: normalizeAccountType(account.type),
+    subtype: account.subtype ?? null,
     balance: roundMoney(account.current_balance ?? 0),
     institution: account.institution_name ?? null,
+    mask: account.mask ?? null,
   };
 }
 
-function normalizeTransaction(row: WarmApiTransaction): NormalizedTransaction | null {
-  if (!row.id || !row.date) {
+function normalizeSnapshot(snapshot: WarmApiSnapshot): GetFinancialStateOutput['snapshots'][number] | null {
+  const date = snapshot.snapshot_date || snapshot.period_end || null;
+  if (!date) {
     return null;
   }
 
-  return {
-    id: row.id,
-    date: row.date,
-    amount: roundMoney(row.amount ?? 0),
-    merchant: row.merchant_name || row.name || 'Unknown',
-    category: row.primary_category ?? null,
-  };
-}
-
-function toCompactTransaction(row: NormalizedTransaction): GetTransactionsOutput['txns'][number] {
-  return {
-    d: row.date,
-    a: row.amount,
-    m: row.merchant,
-    c: row.category,
-  };
-}
-
-function normalizePosition(snapshot: WarmApiSnapshot | null | undefined): FinancialPosition {
-  const asOf = snapshot?.snapshot_date || snapshot?.date || snapshot?.d || null;
-  const netWorth = snapshot?.net_worth ?? snapshot?.nw ?? null;
-  const totalAssets = snapshot?.total_assets ?? snapshot?.a ?? null;
-  const totalLiabilities = snapshot?.total_liabilities ?? snapshot?.l ?? null;
+  const totalAssets =
+    snapshot.total_assets ??
+    (snapshot.total_cash ?? 0) + (snapshot.investment_value ?? 0) + (snapshot.asset_value ?? 0);
+  const totalLiabilities = snapshot.total_liabilities ?? snapshot.total_debt ?? snapshot.liability_value ?? 0;
 
   return {
-    as_of: asOf,
-    net_worth: netWorth == null ? null : roundMoney(netWorth),
-    total_assets: totalAssets == null ? null : roundMoney(totalAssets),
-    total_liabilities: totalLiabilities == null ? null : roundMoney(totalLiabilities),
+    date,
+    net_worth: roundMoney(snapshot.net_worth ?? totalAssets - totalLiabilities),
+    total_assets: roundMoney(totalAssets),
+    total_liabilities: roundMoney(totalLiabilities),
   };
 }
 
-function encodeApiCursor(position: TransactionCursorPosition): string {
-  return Buffer.from(JSON.stringify(position), 'utf-8').toString('base64url');
-}
-
-function encodeOpaqueTransactionCursor(
-  last: TransactionCursorPosition,
-  since: string | null,
-  until: string | null
-): string {
-  const payload: WarmTransactionCursorPayload = {
-    v: CURSOR_VERSION,
-    since,
-    until,
-    last,
+function normalizeRecurring(stream: WarmApiRecurring): GetFinancialStateOutput['recurring'][number] {
+  return {
+    merchant: stream.merchant_name || stream.description || 'Unknown',
+    amount: roundMoney(Math.abs(stream.average_amount ?? stream.last_amount ?? 0)),
+    frequency: stream.frequency || 'UNKNOWN',
+    next_date: stream.next_date ?? null,
+    type: stream.stream_type ?? null,
+    active: stream.is_active !== false,
   };
-  return Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64url');
 }
 
-function decodeOpaqueTransactionCursor(
-  rawCursor: string,
-  since: string | null,
-  until: string | null
-): TransactionCursorPosition {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(Buffer.from(rawCursor, 'base64url').toString('utf-8'));
-  } catch {
-    throw new Error('Invalid cursor. Use the opaque cursor returned by get_transactions.');
-  }
-
-  const payload = parsed as Partial<WarmTransactionCursorPayload>;
-  if (
-    payload?.v !== CURSOR_VERSION ||
-    payload.since !== since ||
-    payload.until !== until ||
-    !payload.last?.date ||
-    !payload.last?.id
-  ) {
-    throw new Error(
-      'Cursor does not match the requested filters. Re-run get_transactions without a cursor.'
-    );
-  }
-
-  return payload.last;
+function normalizeGoal(goal: WarmApiGoal): GetFinancialStateOutput['goals'][number] {
+  return {
+    name: goal.name || 'Unnamed Goal',
+    target: roundMoney(goal.target ?? 0),
+    current: roundMoney(goal.current ?? 0),
+    progress_percent: roundMoney(goal.progress_percent ?? 0),
+    target_date: goal.target_date ?? null,
+    status: goal.status ?? null,
+    category: goal.category ?? null,
+    monthly_contribution_needed:
+      goal.monthly_contribution_needed == null
+        ? null
+        : roundMoney(goal.monthly_contribution_needed),
+  };
 }
 
-function getSummaryCacheKey(since: string | null, until: string | null): string {
-  return `${since || ''}|${until || ''}`;
+function asGeneratedAt(...values: Array<string | null | undefined>): string {
+  return values.find((value): value is string => Boolean(value)) || new Date().toISOString();
 }
 
 function createWarmApiClientConfig(options: WarmApiClientOptions) {
   return {
     apiUrl: options.apiUrl || DEFAULT_API_URL,
+    apiKeyResolver: options.apiKeyResolver,
     fetchImplementation: options.fetchImplementation || fetch,
     requestTimeoutMs: options.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS,
-    apiKeyResolver: options.apiKeyResolver,
   };
 }
 
-async function apiRequest<TResponse>(
+export function getConfiguredApiKey(): string | null {
+  if (cachedApiKey !== undefined) {
+    return cachedApiKey;
+  }
+
+  if (process.env.WARM_API_KEY?.trim()) {
+    cachedApiKey = process.env.WARM_API_KEY.trim();
+    return cachedApiKey;
+  }
+
+  const configPath = path.join(os.homedir(), '.config', 'warm', 'api_key');
+  try {
+    cachedApiKey = fs.readFileSync(configPath, 'utf-8').trim() || null;
+  } catch {
+    cachedApiKey = null;
+  }
+
+  return cachedApiKey;
+}
+
+export async function apiRequest<TResponse>(
   endpoint: string,
-  params: Record<string, string | undefined>,
-  options: ReturnType<typeof createWarmApiClientConfig>
+  params: Record<string, string | undefined> = {},
+  options: WarmApiClientOptions = {}
 ): Promise<TResponse> {
-  const apiKey = options.apiKeyResolver?.() ?? getApiKey();
+  const requestOptions = createWarmApiClientConfig(options);
+  const apiKey = requestOptions.apiKeyResolver?.() ?? getConfiguredApiKey();
+
   if (!apiKey) {
     throw new Error('WARM_API_KEY not set. Run "npx @warmio/mcp" to configure.');
   }
 
-  const url = new URL(endpoint, options.apiUrl);
+  const url = new URL(endpoint, requestOptions.apiUrl);
   Object.entries(params).forEach(([key, value]) => {
     if (value) {
       url.searchParams.append(key, value);
@@ -245,19 +208,19 @@ async function apiRequest<TResponse>(
 
   let response: Response;
   try {
-    response = await options.fetchImplementation(url.toString(), {
+    response = await requestOptions.fetchImplementation(url.toString(), {
       headers: {
         Authorization: `Bearer ${apiKey}`,
         Accept: 'application/json',
       },
-      signal: getRequestSignal(options.requestTimeoutMs),
+      signal: getRequestSignal(requestOptions.requestTimeoutMs),
     });
   } catch (error) {
     if (error instanceof Error && error.name === 'TimeoutError') {
-      throw new Error(`Warm API timed out after ${options.requestTimeoutMs}ms`);
+      throw new Error(`Warm API timed out after ${requestOptions.requestTimeoutMs}ms`);
     }
     if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error(`Warm API request aborted after ${options.requestTimeoutMs}ms`);
+      throw new Error(`Warm API request aborted after ${requestOptions.requestTimeoutMs}ms`);
     }
     throw error;
   }
@@ -280,7 +243,7 @@ async function apiRequest<TResponse>(
         detail = body.error;
       }
     } catch {
-      // Ignore response parse failures and use the HTTP status.
+      // Ignore response parse failures and fall back to status text.
     }
 
     throw new Error(detail);
@@ -303,130 +266,12 @@ function createStructuredToolResult<TStructured extends Record<string, unknown>>
   };
 }
 
-async function fetchTransactionsBatch(
-  cursor: string | undefined,
-  requestOptions: ReturnType<typeof createWarmApiClientConfig>
-): Promise<WarmApiTransactionsResponse> {
-  return apiRequest<WarmApiTransactionsResponse>(
-    '/api/transactions',
-    {
-      limit: String(TRANSACTION_API_PAGE_SIZE),
-      cursor,
-    },
-    requestOptions
-  );
-}
-
-function buildTransactionSummary(
-  total: number,
-  count: number,
-  complete: boolean
-): TransactionSummary {
-  return {
-    total: roundMoney(total),
-    count,
-    avg: count > 0 ? roundMoney(total / count) : 0,
-    kind: complete ? 'matching_range' : 'partial_matching_range',
-    incomplete_reason: complete ? null : 'scan_limit_reached',
-  };
-}
-
-function normalizeHealthLabel(
-  label: string | null | undefined
-): GetFinancialStateOutput['health']['label'] {
-  if (label && HEALTH_LABELS.has(label)) {
-    return label as GetFinancialStateOutput['health']['label'];
-  }
-  return null;
-}
-
-function sortSnapshotsNewestFirst(a: WarmApiSnapshot, b: WarmApiSnapshot): number {
-  const aDate = a.snapshot_date || a.date || a.d || '';
-  const bDate = b.snapshot_date || b.date || b.d || '';
-  return bDate.localeCompare(aDate);
-}
-
-async function getTransactionsSummary(
-  since: string | null,
-  until: string | null,
-  requestOptions: ReturnType<typeof createWarmApiClientConfig>
-): Promise<TransactionSummary> {
-  const cacheKey = getSummaryCacheKey(since, until);
-  const cached = transactionSummaryCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.summary;
-  }
-
-  let nextApiCursor: string | undefined;
-  let pagesScanned = 0;
-  let transactionsScanned = 0;
-  let total = 0;
-  let count = 0;
-  let complete = true;
-
-  while (true) {
-    if (
-      pagesScanned >= SUMMARY_SCAN_PAGE_LIMIT ||
-      transactionsScanned >= SUMMARY_SCAN_TRANSACTION_LIMIT
-    ) {
-      complete = false;
-      break;
-    }
-
-    const response = await fetchTransactionsBatch(nextApiCursor, requestOptions);
-    const batch = response.transactions || [];
-
-    if (batch.length === 0) {
-      break;
-    }
-
-    pagesScanned += 1;
-    transactionsScanned += batch.length;
-
-    let reachedSinceBoundary = false;
-    for (const rawRow of batch) {
-      const row = normalizeTransaction(rawRow);
-      if (!row) {
-        continue;
-      }
-
-      if (until && row.date > until) {
-        continue;
-      }
-
-      if (since && row.date < since) {
-        reachedSinceBoundary = true;
-        break;
-      }
-
-      total += row.amount;
-      count += 1;
-    }
-
-    if (reachedSinceBoundary || !response.pagination?.next_cursor) {
-      break;
-    }
-
-    nextApiCursor = response.pagination.next_cursor;
-  }
-
-  const summary = buildTransactionSummary(total, count, complete);
-  transactionSummaryCache.set(cacheKey, {
-    summary,
-    expiresAt: Date.now() + SUMMARY_CACHE_TTL_MS,
-  });
-
-  return summary;
-}
-
 export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApiClient {
-  const requestOptions = createWarmApiClientConfig(options);
-
   async function getAccounts(): Promise<GetAccountsOutput> {
     const response = await apiRequest<WarmApiAccountsResponse>(
       '/api/export',
       { dataset: 'accounts' },
-      requestOptions
+      options
     );
 
     return {
@@ -435,145 +280,79 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
   }
 
   async function getTransactions(input: GetTransactionsInput): Promise<GetTransactionsOutput> {
-    const since = input.since ?? null;
-    const until = input.until ?? null;
-    const apiCursor = input.cursor
-      ? encodeApiCursor(decodeOpaqueTransactionCursor(input.cursor, since, until))
-      : undefined;
-
-    let nextApiCursor = apiCursor;
-    const matches: NormalizedTransaction[] = [];
-
-    while (matches.length < input.limit) {
-      const response = await fetchTransactionsBatch(nextApiCursor, requestOptions);
-      const batch = response.transactions || [];
-
-      if (batch.length === 0) {
-        break;
-      }
-
-      let reachedSinceBoundary = false;
-      for (let index = 0; index < batch.length; index += 1) {
-        const row = normalizeTransaction(batch[index]);
-        if (!row) {
-          continue;
-        }
-
-        if (until && row.date > until) {
-          continue;
-        }
-
-        if (since && row.date < since) {
-          reachedSinceBoundary = true;
-          break;
-        }
-
-        matches.push(row);
-
-        if (matches.length === input.limit) {
-          const last = matches[matches.length - 1];
-          let hasMoreInBatch = false;
-          let reachedSinceBoundaryInBatch = false;
-
-          for (let tailIndex = index + 1; tailIndex < batch.length; tailIndex += 1) {
-            const tailRow = normalizeTransaction(batch[tailIndex]);
-            if (!tailRow) {
-              continue;
-            }
-
-            if (until && tailRow.date > until) {
-              continue;
-            }
-
-            if (since && tailRow.date < since) {
-              reachedSinceBoundaryInBatch = true;
-              break;
-            }
-
-            hasMoreInBatch = true;
-            break;
-          }
-
-          const hasMore =
-            hasMoreInBatch ||
-            (!reachedSinceBoundaryInBatch && Boolean(response.pagination?.next_cursor));
-
-          return {
-            query: {
-              since,
-              until,
-              limit: input.limit,
-            },
-            summary: await getTransactionsSummary(since, until, requestOptions),
-            txns: matches.map(toCompactTransaction),
-            page: {
-              returned: matches.length,
-              has_more: hasMore,
-              next_cursor: hasMore
-                ? encodeOpaqueTransactionCursor(
-                    { date: last.date, id: last.id },
-                    since,
-                    until
-                  )
-                : null,
-            },
-          };
-        }
-      }
-
-      if (reachedSinceBoundary || !response.pagination?.next_cursor) {
-        break;
-      }
-
-      nextApiCursor = response.pagination.next_cursor;
-    }
+    const response = await apiRequest<WarmApiTransactionsResponse>(
+      '/api/transactions',
+      {
+        limit: String(input.limit),
+        cursor: input.cursor,
+        last_knowledge: input.last_knowledge,
+      },
+      options
+    );
+    const nextCursor = response.pagination?.next_cursor ?? null;
 
     return {
-      query: {
-        since,
-        until,
-        limit: input.limit,
-      },
-      summary: await getTransactionsSummary(since, until, requestOptions),
-      txns: matches.map(toCompactTransaction),
-      page: {
-        returned: matches.length,
-        has_more: false,
-        next_cursor: null,
+      generated_at: response.generated_at ?? null,
+      next_knowledge: response.next_knowledge ?? null,
+      txns: (response.transactions || []).map((transaction) => ({
+        id: transaction.id ?? null,
+        date: transaction.date ?? null,
+        amount: roundMoney(transaction.amount ?? 0),
+        merchant: transaction.merchant_name ?? null,
+        description: transaction.name ?? null,
+        category: transaction.primary_category ?? null,
+        detailed_category: transaction.detailed_category ?? null,
+      })),
+      pagination: {
+        limit: response.pagination?.limit ?? input.limit,
+        next_cursor: nextCursor,
+        has_more: nextCursor !== null,
       },
     };
   }
 
   async function getFinancialState(): Promise<GetFinancialStateOutput> {
-    const [snapshotResponse, healthResponse] = await Promise.all([
-      apiRequest<WarmApiSnapshotsResponse>(
-        '/api/export',
-        { dataset: 'snapshots' },
-        requestOptions
-      ),
-      apiRequest<WarmApiHealthResponse>('/api/export', { dataset: 'health' }, requestOptions),
-    ]);
-
-    const snapshots = [...(snapshotResponse.snapshots || [])].sort(sortSnapshotsNewestFirst);
-    const previousSnapshot = snapshots[1];
+    const [snapshotsResponse, recurringResponse, budgetsResponse, goalsResponse, healthResponse] =
+      await Promise.all([
+        apiRequest<WarmApiSnapshotsResponse>('/api/export', { dataset: 'snapshots' }, options),
+        apiRequest<WarmApiRecurringResponse>('/api/export', { dataset: 'recurring' }, options),
+        apiRequest<WarmApiBudgetsResponse>('/api/export', { dataset: 'budgets' }, options),
+        apiRequest<WarmApiGoalsResponse>('/api/export', { dataset: 'goals' }, options),
+        apiRequest<WarmApiHealthResponse>('/api/export', { dataset: 'health' }, options),
+      ]);
 
     return {
-      current: normalizePosition(snapshots[0]),
-      previous: previousSnapshot ? normalizePosition(previousSnapshot) : null,
+      generated_at: asGeneratedAt(
+        snapshotsResponse.generated_at,
+        recurringResponse.generated_at,
+        budgetsResponse.generated_at,
+        goalsResponse.generated_at,
+        healthResponse.generated_at
+      ),
+      snapshots: (snapshotsResponse.snapshots || [])
+        .map(normalizeSnapshot)
+        .filter((snapshot): snapshot is NonNullable<typeof snapshot> => snapshot !== null),
+      recurring: (recurringResponse.recurring_transactions || []).map(normalizeRecurring),
+      budgets: (budgetsResponse.budgets || []).map((budget) => ({
+        name: budget.name || 'Unnamed Budget',
+        amount: roundMoney(budget.amount ?? 0),
+        spent: roundMoney(budget.spent ?? 0),
+        remaining: roundMoney(budget.remaining ?? 0),
+        percent_used: roundMoney(budget.percent_used ?? 0),
+        period: budget.period || 'monthly',
+        status: budget.status ?? null,
+      })),
+      goals: (goalsResponse.goals || []).map(normalizeGoal),
       health: {
-        score:
-          typeof healthResponse.score === 'number' ? Math.round(healthResponse.score) : null,
-        label: normalizeHealthLabel(healthResponse.label),
-        data_completeness:
-          typeof healthResponse.data_completeness === 'number'
-            ? roundMoney(healthResponse.data_completeness)
-            : null,
+        score: healthResponse.score ?? null,
+        label: healthResponse.label ?? null,
+        data_completeness: healthResponse.data_completeness ?? null,
         pillars: healthResponse.pillars
           ? {
-              spend: roundMoney(healthResponse.pillars.spend ?? 0),
-              save: roundMoney(healthResponse.pillars.save ?? 0),
-              borrow: roundMoney(healthResponse.pillars.borrow ?? 0),
-              build: roundMoney(healthResponse.pillars.build ?? 0),
+              spend: healthResponse.pillars.spend ?? null,
+              save: healthResponse.pillars.save ?? null,
+              borrow: healthResponse.pillars.borrow ?? null,
+              build: healthResponse.pillars.build ?? null,
             }
           : null,
         message: healthResponse.message ?? null,
@@ -582,7 +361,7 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
   }
 
   async function verifyKey(): Promise<VerifyKeyOutput> {
-    const response = await apiRequest<WarmApiVerifyResponse>('/api/verify', {}, requestOptions);
+    const response = await apiRequest<WarmApiVerifyResponse>('/api/verify', {}, options);
     return {
       valid: response.valid === true,
       status: response.status || (response.valid ? 'ok' : 'invalid'),
@@ -608,7 +387,7 @@ export function registerWarmTools(
       'get_accounts',
       {
         description:
-          'Read-only list of connected financial accounts with current balances and institutions.',
+          'Read-only list of connected financial accounts with balances, subtypes, institutions, and masks when available.',
         inputSchema: emptyInputSchema as unknown as AnySchema,
         outputSchema: getAccountsOutputSchema as unknown as AnySchema,
         annotations: READ_ONLY_TOOL_ANNOTATIONS,
@@ -619,7 +398,7 @@ export function registerWarmTools(
       'get_transactions',
       {
         description:
-          'Read-only transaction query with transaction-date filters and opaque cursor pagination. `summary.kind` is `matching_range` when exact. If it is `partial_matching_range`, the server hit a scan limit while summarizing the full matching range and the model should narrow the date window.',
+          'Read-only transaction export with strict opaque cursor pagination and optional last_knowledge incremental sync.',
         inputSchema: getTransactionsInputSchema as unknown as AnySchema,
         outputSchema: getTransactionsOutputSchema as unknown as AnySchema,
         annotations: READ_ONLY_TOOL_ANNOTATIONS,
@@ -631,7 +410,7 @@ export function registerWarmTools(
       'get_financial_state',
       {
         description:
-          'Read-only overview of current financial state from the latest net-worth snapshots plus the exported financial health score.',
+          'Read-only broad financial state bundle with snapshots, recurring payments, budgets, goals, and financial health.',
         inputSchema: emptyInputSchema as unknown as AnySchema,
         outputSchema: getFinancialStateOutputSchema as unknown as AnySchema,
         annotations: READ_ONLY_TOOL_ANNOTATIONS,

@@ -5,7 +5,6 @@ import type {
   GetFinancialStateOutput,
   GetTransactionsInput,
   GetTransactionsOutput,
-  TransactionSummary,
   VerifyKeyOutput,
 } from './schemas.js';
 
@@ -43,8 +42,10 @@ export interface WarmApiClient {
 export interface WarmApiAccount {
   name?: string | null;
   type?: string | null;
+  subtype?: string | null;
   current_balance?: number | null;
   institution_name?: string | null;
+  mask?: string | null;
 }
 
 export interface WarmApiAccountsResponse {
@@ -59,29 +60,81 @@ export interface WarmApiTransaction {
   merchant_name?: string | null;
   name?: string | null;
   primary_category?: string | null;
+  detailed_category?: string | null;
 }
 
 export interface WarmApiTransactionsResponse {
+  generated_at?: string;
+  next_knowledge?: string;
   transactions?: WarmApiTransaction[];
   pagination?: {
+    limit?: number | null;
     next_cursor?: string | null;
   };
 }
 
 export interface WarmApiSnapshot {
   snapshot_date?: string | null;
-  date?: string | null;
-  d?: string | null;
+  period_end?: string | null;
   net_worth?: number | null;
-  nw?: number | null;
   total_assets?: number | null;
-  a?: number | null;
   total_liabilities?: number | null;
-  l?: number | null;
+  total_cash?: number | null;
+  investment_value?: number | null;
+  asset_value?: number | null;
+  total_debt?: number | null;
+  liability_value?: number | null;
 }
 
 export interface WarmApiSnapshotsResponse {
   snapshots?: WarmApiSnapshot[];
+  generated_at?: string;
+}
+
+export interface WarmApiRecurring {
+  average_amount?: number | null;
+  description?: string | null;
+  frequency?: string | null;
+  is_active?: boolean | null;
+  last_amount?: number | null;
+  merchant_name?: string | null;
+  next_date?: string | null;
+  stream_type?: string | null;
+}
+
+export interface WarmApiRecurringResponse {
+  recurring_transactions?: WarmApiRecurring[];
+  generated_at?: string;
+}
+
+export interface WarmApiBudget {
+  amount?: number | null;
+  name?: string | null;
+  period?: string | null;
+  percent_used?: number | null;
+  remaining?: number | null;
+  spent?: number | null;
+  status?: string | null;
+}
+
+export interface WarmApiBudgetsResponse {
+  budgets?: WarmApiBudget[];
+  generated_at?: string;
+}
+
+export interface WarmApiGoal {
+  category?: string | null;
+  current?: number | null;
+  monthly_contribution_needed?: number | null;
+  name?: string | null;
+  progress_percent?: number | null;
+  status?: string | null;
+  target?: number | null;
+  target_date?: string | null;
+}
+
+export interface WarmApiGoalsResponse {
+  goals?: WarmApiGoal[];
   generated_at?: string;
 }
 
@@ -103,29 +156,4 @@ export interface WarmApiVerifyResponse {
   valid?: boolean;
   status?: string;
   error?: string;
-}
-
-export interface TransactionCursorPosition {
-  date: string;
-  id: string;
-}
-
-export interface WarmTransactionCursorPayload {
-  v: 1;
-  since: string | null;
-  until: string | null;
-  last: TransactionCursorPosition;
-}
-
-export interface NormalizedTransaction {
-  id: string;
-  date: string;
-  amount: number;
-  merchant: string;
-  category: string | null;
-}
-
-export interface TransactionSummaryCacheEntry {
-  expiresAt: number;
-  summary: TransactionSummary;
 }

@@ -4,6 +4,8 @@ const dateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected date in YYYY-MM-DD format.');
 
+const dateTimeSchema = z.string().datetime({ offset: true });
+
 export const emptyInputSchema = z.object({}).strict().default({});
 
 export const accountTypeSchema = z.enum([
@@ -18,8 +20,10 @@ export const accountSchema = z
   .object({
     name: z.string(),
     type: accountTypeSchema,
+    subtype: z.string().nullable(),
     balance: z.number().finite(),
     institution: z.string().nullable(),
+    mask: z.string().nullable(),
   })
   .strict();
 
@@ -31,12 +35,6 @@ export const getAccountsOutputSchema = z
 
 const getTransactionsInputObjectSchema = z
   .object({
-    since: dateSchema
-      .optional()
-      .describe('Start date inclusive (YYYY-MM-DD). Omit for the oldest available data.'),
-    until: dateSchema
-      .optional()
-      .describe('End date inclusive (YYYY-MM-DD). Omit for the newest available data.'),
     limit: z
       .int()
       .min(1)
@@ -48,98 +46,111 @@ const getTransactionsInputObjectSchema = z
       .min(1)
       .optional()
       .describe('Opaque pagination cursor from a previous get_transactions response.'),
+    last_knowledge: dateTimeSchema
+      .optional()
+      .describe(
+        'Incremental sync checkpoint from a prior get_transactions response. Cannot be combined with cursor.'
+      ),
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (value.since && value.until && value.since > value.until) {
+    if (value.cursor && value.last_knowledge) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['since'],
-        message: '`since` must be on or before `until`.',
+        path: ['cursor'],
+        message: '`cursor` cannot be combined with `last_knowledge`.',
       });
     }
   });
 
-export const getTransactionsInputSchema = getTransactionsInputObjectSchema.default({
-  limit: 500,
-});
+export const getTransactionsInputSchema = getTransactionsInputObjectSchema;
 
-export const compactTransactionSchema = z
+export const transactionSchema = z
   .object({
-    d: dateSchema,
-    a: z.number().finite(),
-    m: z.string(),
-    c: z.string().nullable(),
-  })
-  .strict();
-
-export const transactionSummaryKindSchema = z.enum([
-  'matching_range',
-  'partial_matching_range',
-]);
-
-export const transactionSummarySchema = z
-  .object({
-    total: z.number().finite(),
-    count: z.int().nonnegative(),
-    avg: z.number().finite(),
-    kind: transactionSummaryKindSchema,
-    incomplete_reason: z.enum(['scan_limit_reached']).nullable(),
+    id: z.string().nullable(),
+    date: dateSchema.nullable(),
+    amount: z.number().finite(),
+    merchant: z.string().nullable(),
+    description: z.string().nullable(),
+    category: z.string().nullable(),
+    detailed_category: z.string().nullable(),
   })
   .strict();
 
 export const getTransactionsOutputSchema = z
   .object({
-    query: z
+    generated_at: dateTimeSchema.nullable(),
+    next_knowledge: dateTimeSchema.nullable(),
+    txns: z.array(transactionSchema),
+    pagination: z
       .object({
-        since: dateSchema.nullable(),
-        until: dateSchema.nullable(),
         limit: z.int().min(1).max(1000),
-      })
-      .strict(),
-    summary: transactionSummarySchema,
-    txns: z.array(compactTransactionSchema),
-    page: z
-      .object({
-        returned: z.int().nonnegative(),
-        has_more: z.boolean(),
         next_cursor: z.string().nullable(),
+        has_more: z.boolean(),
       })
       .strict(),
   })
   .strict();
 
-export const financialPositionSchema = z
+export const snapshotSchema = z
   .object({
-    as_of: dateSchema.nullable(),
-    net_worth: z.number().finite().nullable(),
-    total_assets: z.number().finite().nullable(),
-    total_liabilities: z.number().finite().nullable(),
+    date: dateSchema,
+    net_worth: z.number().finite(),
+    total_assets: z.number().finite(),
+    total_liabilities: z.number().finite(),
   })
   .strict();
 
-export const healthLabelSchema = z.enum([
-  'Critical',
-  'Urgent',
-  'Needs Attention',
-  'Good',
-  'Strong',
-]);
+export const recurringSchema = z
+  .object({
+    merchant: z.string(),
+    amount: z.number().finite(),
+    frequency: z.string(),
+    next_date: dateSchema.nullable(),
+    type: z.string().nullable(),
+    active: z.boolean(),
+  })
+  .strict();
+
+export const budgetSchema = z
+  .object({
+    name: z.string(),
+    amount: z.number().finite(),
+    spent: z.number().finite(),
+    remaining: z.number().finite(),
+    percent_used: z.number().finite(),
+    period: z.string(),
+    status: z.string().nullable(),
+  })
+  .strict();
+
+export const goalSchema = z
+  .object({
+    name: z.string(),
+    target: z.number().finite(),
+    current: z.number().finite(),
+    progress_percent: z.number().finite(),
+    target_date: dateSchema.nullable(),
+    status: z.string().nullable(),
+    category: z.string().nullable(),
+    monthly_contribution_needed: z.number().finite().nullable(),
+  })
+  .strict();
 
 export const healthPillarsSchema = z
   .object({
-    spend: z.number().finite(),
-    save: z.number().finite(),
-    borrow: z.number().finite(),
-    build: z.number().finite(),
+    spend: z.number().finite().nullable(),
+    save: z.number().finite().nullable(),
+    borrow: z.number().finite().nullable(),
+    build: z.number().finite().nullable(),
   })
   .strict();
 
 export const financialHealthSchema = z
   .object({
-    score: z.number().int().min(0).max(100).nullable(),
-    label: healthLabelSchema.nullable(),
-    data_completeness: z.number().min(0).max(100).nullable(),
+    score: z.number().finite().nullable(),
+    label: z.string().nullable(),
+    data_completeness: z.number().finite().nullable(),
     pillars: healthPillarsSchema.nullable(),
     message: z.string().nullable(),
   })
@@ -147,8 +158,11 @@ export const financialHealthSchema = z
 
 export const getFinancialStateOutputSchema = z
   .object({
-    current: financialPositionSchema,
-    previous: financialPositionSchema.nullable(),
+    generated_at: dateTimeSchema,
+    snapshots: z.array(snapshotSchema),
+    recurring: z.array(recurringSchema),
+    budgets: z.array(budgetSchema),
+    goals: z.array(goalSchema),
     health: financialHealthSchema,
   })
   .strict();
@@ -161,12 +175,9 @@ export const verifyKeyOutputSchema = z
   .strict();
 
 export type Account = z.infer<typeof accountSchema>;
-export type CompactTransaction = z.infer<typeof compactTransactionSchema>;
 export type FinancialHealth = z.infer<typeof financialHealthSchema>;
-export type FinancialPosition = z.infer<typeof financialPositionSchema>;
 export type GetAccountsOutput = z.infer<typeof getAccountsOutputSchema>;
 export type GetFinancialStateOutput = z.infer<typeof getFinancialStateOutputSchema>;
 export type GetTransactionsInput = z.infer<typeof getTransactionsInputSchema>;
 export type GetTransactionsOutput = z.infer<typeof getTransactionsOutputSchema>;
-export type TransactionSummary = z.infer<typeof transactionSummarySchema>;
 export type VerifyKeyOutput = z.infer<typeof verifyKeyOutputSchema>;
