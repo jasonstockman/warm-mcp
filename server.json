@@ -1,0 +1,41 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.jasonstockman/warm-mcp",
+  "title": "Warm",
+  "description": "Read-only MCP server for Warm financial data via local stdio transport.",
+  "version": "4.0.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@warmio/mcp",
+      "version": "4.0.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "WARM_API_KEY",
+          "description": "Warm API key from https://warm.io/settings.",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "WARM_API_URL",
+          "description": "Optional Warm API base URL override.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "WARM_API_TIMEOUT_MS",
+          "description": "Optional request timeout override in milliseconds.",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ],
+  "repository": {
+    "url": "https://github.com/jasonstockman/warm-and-fresh",
+    "source": "github"
+  }
+}

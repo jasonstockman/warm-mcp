@@ -1,60 +1,263 @@
-# Warm MCP Server
+# Warm MCP
 
-MCP server that gives Claude Code (or any MCP client) read-only access to your Warm financial data.
+Read-only MCP server for Warm financial data.
 
-## Quick Start
+Warm supports two transport shapes from this repo:
+
+- Local `stdio` via the npm package `@warmio/mcp`
+- Self-hosted Streamable HTTP via `warm-mcp http`
+
+Warm does not currently publish a Warm-hosted Streamable HTTP MCP endpoint from this repo.
+
+## Install
 
 ```bash
 npx @warmio/mcp
 ```
 
-Detects installed MCP clients, prompts for your API key, and configures everything automatically.
-Works on macOS, Linux, and Windows. Supports: Claude Code, Claude Desktop, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity, Gemini CLI.
-
-After setup, open your MCP client and ask:
-- "What's my net worth?"
-- "How much did I spend on restaurants last month?"
-- "Show me my subscriptions"
-
-## Options
-
-| Command | Description |
-|---------|-------------|
-| `npx @warmio/mcp` | Run the installer / configurator |
-| `npx @warmio/mcp --force` | Re-run installer (updates API key in all configs) |
-| `npx @warmio/mcp --server` | Start the MCP server (used internally by clients) |
+The installer detects supported MCP clients, prompts for your Warm API key, and writes the local
+`stdio` server config automatically.
 
 ## Requirements
 
-- **Pro subscription** — API access requires Warm Pro
-- **API key** — Generate in [Settings → API Keys](https://warm.io/settings)
-- **Node.js 18+** — For running the MCP server
+- Warm Pro
+- A Warm API key from [Settings -> API Keys](https://warm.io/settings)
+- Node.js 18+
 
-## How It Works
+## Manual `stdio` Config
 
-1. You run `npx @warmio/mcp` once
-2. It detects which MCP clients you have installed
-3. Prompts for your Warm API key
-4. Writes the server config into each client's settings
-5. Each client is configured to run `npx -y @warmio/mcp --server` on demand
+Use this shape when configuring a local MCP client manually:
 
-The MCP server starts automatically when your client needs it — you never run it manually.
+```json
+{
+  "mcpServers": {
+    "warm": {
+      "command": "npx",
+      "args": ["-y", "@warmio/mcp", "--server"],
+      "env": {
+        "WARM_API_KEY": "your_warm_api_key"
+      }
+    }
+  }
+}
+```
 
-## Available Tools
+## Self-hosted Streamable HTTP
+
+Run the HTTP server locally or behind your own reverse proxy:
+
+```bash
+npx @warmio/mcp http --host 0.0.0.0 --port 3000 --path /mcp
+```
+
+Environment overrides:
+
+- `WARM_MCP_HTTP_HOST`
+- `WARM_MCP_HTTP_PORT`
+- `WARM_MCP_HTTP_PATH`
+- `WARM_MCP_ALLOWED_HOSTS`
+
+On Windows, prefer:
+
+```json
+{
+  "mcpServers": {
+    "warm": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@warmio/mcp", "--server"],
+      "env": {
+        "WARM_API_KEY": "your_warm_api_key"
+      }
+    }
+  }
+}
+```
+
+## Core Tools
+
+Warm's published/documented MCP surface is the following four-tool core:
 
 | Tool | Description |
 |------|-------------|
-| `get_accounts` | List all connected bank accounts with balances |
-| `get_transactions` | Get transactions with date/limit filters |
-| `get_recurring` | Show subscriptions and recurring income/expenses |
-| `get_snapshots` | Daily net worth history |
-| `verify_key` | Check if API key is valid |
+| `get_accounts` | List connected accounts with current balances |
+| `get_transactions` | Page through transactions with an opaque cursor |
+| `get_financial_state` | Return the current typed financial state bundle |
+| `verify_key` | Validate the configured API key |
+
+## Strict Contract
+
+- Every tool takes a JSON object input and returns a JSON object output.
+- Treat the contracts as closed and typed. Do not depend on undocumented fields.
+- Calendar dates use `YYYY-MM-DD`. Incremental sync timestamps use ISO 8601 datetimes.
+- Amounts are numbers, never formatted strings.
+- Transaction amounts follow the Plaid sign convention:
+  positive = expense/debit, negative = income/credit.
+- Pagination cursors are opaque strings. Do not parse them or mix them with changed filters.
+
+### `get_accounts`
+
+Input:
+
+```json
+{}
+```
+
+Returns:
+
+```json
+{
+  "accounts": [
+    {
+      "name": "Primary Checking",
+      "type": "depository",
+      "subtype": "checking",
+      "balance": 2450.12,
+      "institution": "Chase",
+      "mask": "1234"
+    }
+  ]
+}
+```
+
+### `get_transactions`
+
+Input:
+
+```json
+{
+  "limit": 100,
+  "cursor": "opaque-cursor-from-a-prior-page",
+  "last_knowledge": "2026-03-11T00:00:00.000Z"
+}
+```
+
+Returns:
+
+```json
+{
+  "generated_at": "2026-03-11T12:00:00.000Z",
+  "next_knowledge": "2026-03-11T12:00:00.000Z",
+  "txns": [
+    {
+      "id": "txn_123",
+      "date": "2026-01-15",
+      "amount": 12.34,
+      "merchant": "Coffee Shop",
+      "description": "COFFEE SHOP",
+      "category": "FOOD_AND_DRINK",
+      "detailed_category": "FOOD_AND_DRINK_COFFEE"
+    }
+  ],
+  "pagination": {
+    "limit": 100,
+    "next_cursor": "opaque-next-cursor",
+    "has_more": true
+  }
+}
+```
+
+Cursor model:
+
+1. Omit `cursor` on the first call.
+2. Keep `limit` fixed while following a cursor chain.
+3. If `pagination.next_cursor` is non-null, pass it unchanged to fetch the next page.
+4. Stop when `next_cursor` is `null`.
+5. Do not combine `cursor` with `last_knowledge`.
+
+### `get_financial_state`
+
+Input:
+
+```json
+{}
+```
+
+Returns:
+
+```json
+{
+  "generated_at": "2026-03-11T12:00:00.000Z",
+  "snapshots": [
+    {
+      "date": "2026-03-11",
+      "net_worth": 125430.55,
+      "total_assets": 168210.77,
+      "total_liabilities": 42780.22
+    }
+  ],
+  "recurring": [
+    {
+      "merchant": "Netflix",
+      "amount": 15.49,
+      "frequency": "MONTHLY",
+      "next_date": "2026-03-18",
+      "type": "subscription",
+      "active": true
+    }
+  ],
+  "budgets": [
+    {
+      "name": "Dining Out",
+      "amount": 400,
+      "spent": 182.55,
+      "remaining": 217.45,
+      "percent_used": 45.64,
+      "period": "monthly",
+      "status": "on_track"
+    }
+  ],
+  "goals": [
+    {
+      "name": "Emergency Fund",
+      "target": 10000,
+      "current": 4200,
+      "progress_percent": 42,
+      "target_date": null,
+      "status": "active",
+      "category": "safety",
+      "monthly_contribution_needed": 400
+    }
+  ],
+  "health": {
+    "score": 78,
+    "label": "Good",
+    "data_completeness": 94,
+    "pillars": {
+      "spend": 20,
+      "save": 23,
+      "borrow": 15,
+      "build": 20
+    }
+    },
+    "message": null
+  }
+}
+```
+
+If Warm does not have enough state data yet, nullable fields remain `null`.
+
+### `verify_key`
+
+Input:
+
+```json
+{}
+```
+
+Returns:
+
+```json
+{
+  "valid": true,
+  "status": "ok"
+}
+```
 
 ## Security
 
-- **Read-only** — Cannot modify, delete, or transfer data
-- **Scoped** — Key only accesses your accounts
-- **Revocable** — Delete key in Settings to revoke instantly
+- Read-only: no write, delete, transfer, or mutation tools
+- Scoped: the key only reads the owner's Warm data
+- Revocable: delete the key in Settings to revoke access immediately
 
 ## Development
 

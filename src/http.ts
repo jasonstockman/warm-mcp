@@ -1,4 +1,4 @@
-import type { Server as HttpServer } from 'http';
+import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'http';
 
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -11,6 +11,16 @@ export interface WarmHttpServerOptions {
   path?: string;
   allowedHosts?: string[];
 }
+
+type HttpRequest = IncomingMessage & {
+  body?: unknown;
+};
+
+type HttpResponse = ServerResponse & {
+  json: (body: unknown) => HttpResponse;
+  set: (name: string, value: string) => HttpResponse;
+  status: (code: number) => HttpResponse;
+};
 
 const DEFAULT_HTTP_HOST = '0.0.0.0';
 const DEFAULT_HTTP_PORT = 3000;
@@ -51,9 +61,7 @@ function jsonRpcError(message: string) {
   };
 }
 
-function sendMethodNotAllowed(
-  res: Parameters<Parameters<ReturnType<typeof createMcpExpressApp>['get']>[1]>[1]
-): void {
+function sendMethodNotAllowed(res: HttpResponse): void {
   res.status(405).set('Allow', 'POST').json(jsonRpcError('Method not allowed.'));
 }
 
@@ -91,7 +99,7 @@ export async function startHttpServer(
     ...(resolved.allowedHosts.length > 0 ? { allowedHosts: resolved.allowedHosts } : {}),
   });
 
-  app.post(resolved.path, async (req, res) => {
+  app.post(resolved.path, async (req: HttpRequest, res: HttpResponse) => {
     const server = createWarmServer();
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
@@ -123,11 +131,11 @@ export async function startHttpServer(
     }
   });
 
-  app.get(resolved.path, (_req, res) => {
+  app.get(resolved.path, (_req: HttpRequest, res: HttpResponse) => {
     sendMethodNotAllowed(res);
   });
 
-  app.delete(resolved.path, (_req, res) => {
+  app.delete(resolved.path, (_req: HttpRequest, res: HttpResponse) => {
     sendMethodNotAllowed(res);
   });
 

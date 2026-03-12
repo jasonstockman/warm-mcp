@@ -1,18 +1,22 @@
 /**
  * Warm MCP server worker and shared API helpers.
  *
- * The transport layer lives elsewhere. This module exposes the reusable MCP
- * server factory plus the shared Warm API request helpers used by stdio, HTTP,
- * and installation flows.
+ * This module owns the typed MCP contract and the Warm API request helpers used
+ * by stdio, HTTP, and installation flows.
  */
 
 import { readFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import type { AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
+import * as z from 'zod/v4';
+import {
+  createWarmServer as createReusableWarmServer,
+  verifyWarmApiKey as verifyReusableWarmApiKey,
+} from './warm-server.js';
 
 const PACKAGE_VERSION = getPackageVersion();
 
@@ -23,53 +27,55 @@ export const WARM_SERVER_INFO = {
 
 export const API_URL = process.env.WARM_API_URL || 'https://warm.io';
 
-const MAX_TRANSACTION_PAGES = 10;
-const MAX_TRANSACTION_SCAN = 5_000;
-const TRANSACTION_PAGE_SIZE = 200;
-const TRANSACTION_CACHE_TTL_MS = 600_000;
 const REQUEST_TIMEOUT_MS = (() => {
   const raw = Number(process.env.WARM_API_TIMEOUT_MS || 10_000);
   return Number.isFinite(raw) && raw > 0 ? raw : 10_000;
 })();
 
-let cachedApiKey: string | null | undefined;
-
-let txnCache: {
-  key: string;
-  transactions: CompactTransaction[];
-  summary: ReturnType<typeof calculateSummary>;
-  fetchedAt: number;
-} | null = null;
+type WarmAccountType = 'depository' | 'credit' | 'loan' | 'investment' | 'other';
 
 interface WarmApiRequestOptions {
   apiKey?: string;
 }
 
-interface Transaction {
-  id: string | null;
-  date: string | null;
-  amount: number | null;
+interface ApiAccount {
+  name?: string | null;
+  type?: string | null;
+  subtype?: string | null;
+  current_balance?: number | null;
+  institution_name?: string | null;
+  mask?: string | null;
+}
+
+interface ApiTransaction {
+  id?: string | null;
+  date?: string | null;
+  amount?: number | null;
   merchant_name?: string | null;
   name?: string | null;
   primary_category?: string | null;
   detailed_category?: string | null;
 }
 
-interface ApiAccount {
-  name?: string | null;
-  type?: string | null;
-  current_balance?: number | null;
+interface ApiTransactionPage {
+  generated_at?: string;
+  next_knowledge?: string;
+  transactions?: ApiTransaction[];
+  pagination?: {
+    limit?: number | null;
+    next_cursor?: string | null;
+  };
 }
 
 interface ApiSnapshot {
-  snapshot_date?: string;
-  d?: string;
-  net_worth?: number;
-  nw?: number;
-  total_assets?: number;
-  a?: number;
-  total_liabilities?: number;
-  l?: number;
+  snapshot_date?: string | null;
+  d?: string | null;
+  net_worth?: number | null;
+  nw?: number | null;
+  total_assets?: number | null;
+  a?: number | null;
+  total_liabilities?: number | null;
+  l?: number | null;
 }
 
 interface ApiRecurring {
@@ -91,9 +97,6 @@ interface ApiBudget {
   percent_used?: number | null;
   period?: string | null;
   status?: string | null;
-  budget_type?: string | null;
-  rollover_enabled?: boolean | null;
-  effective_amount?: number | null;
 }
 
 interface ApiGoal {
@@ -105,7 +108,6 @@ interface ApiGoal {
   status?: string | null;
   category?: string | null;
   monthly_contribution_needed?: number | null;
-  linked_account?: string | null;
 }
 
 interface ApiHealth {
@@ -119,15 +121,120 @@ interface ApiHealth {
   } | null;
   data_completeness?: number | null;
   message?: string | null;
-  generated_at?: string;
 }
 
-interface CompactTransaction {
-  d: string;
-  a: number;
-  m: string;
-  c: string | null;
-}
+const accountOutputSchema = z.object({
+  name: z.string(),
+  type: z.enum(['depository', 'credit', 'loan', 'investment', 'other']),
+  subtype: z.string().nullable(),
+  balance: z.number(),
+  institution: z.string().nullable(),
+  mask: z.string().nullable(),
+});
+
+const transactionOutputSchema = z.object({
+  id: z.string().nullable(),
+  date: z.string().nullable(),
+  amount: z.number(),
+  merchant: z.string().nullable(),
+  description: z.string().nullable(),
+  category: z.string().nullable(),
+  detailed_category: z.string().nullable(),
+});
+
+const snapshotOutputSchema = z.object({
+  date: z.string(),
+  net_worth: z.number(),
+  total_assets: z.number(),
+  total_liabilities: z.number(),
+});
+
+const recurringOutputSchema = z.object({
+  merchant: z.string(),
+  amount: z.number(),
+  frequency: z.string(),
+  next_date: z.string().nullable(),
+  type: z.string().nullable(),
+  active: z.boolean(),
+});
+
+const budgetOutputSchema = z.object({
+  name: z.string(),
+  amount: z.number(),
+  spent: z.number(),
+  remaining: z.number(),
+  percent_used: z.number(),
+  period: z.string(),
+  status: z.string().nullable(),
+});
+
+const goalOutputSchema = z.object({
+  name: z.string(),
+  target: z.number(),
+  current: z.number(),
+  progress_percent: z.number(),
+  target_date: z.string().nullable(),
+  status: z.string().nullable(),
+  category: z.string().nullable(),
+  monthly_contribution_needed: z.number().nullable(),
+});
+
+const healthPillarsOutputSchema = z.object({
+  spend: z.number().nullable(),
+  save: z.number().nullable(),
+  borrow: z.number().nullable(),
+  build: z.number().nullable(),
+});
+
+const healthOutputSchema = z.object({
+  score: z.number().nullable(),
+  label: z.string().nullable(),
+  data_completeness: z.number().nullable(),
+  pillars: healthPillarsOutputSchema.nullable(),
+  message: z.string().nullable(),
+});
+
+const getAccountsOutputSchema = z.object({
+  accounts: z.array(accountOutputSchema),
+});
+
+const getTransactionsInputSchema = z
+  .object({
+    limit: z.number().int().min(1).max(1000).default(500),
+    cursor: z.string().min(1).optional(),
+    last_knowledge: z.string().datetime({ offset: true }).optional(),
+  })
+  .strict();
+
+const getTransactionsOutputSchema = z.object({
+  generated_at: z.string().datetime({ offset: true }).nullable(),
+  next_knowledge: z.string().datetime({ offset: true }).nullable(),
+  txns: z.array(transactionOutputSchema),
+  pagination: z.object({
+    limit: z.number().int().min(1).max(1000),
+    next_cursor: z.string().nullable(),
+    has_more: z.boolean(),
+  }),
+});
+
+const getFinancialStateOutputSchema = z.object({
+  generated_at: z.string().datetime({ offset: true }),
+  snapshots: z.array(snapshotOutputSchema),
+  recurring: z.array(recurringOutputSchema),
+  budgets: z.array(budgetOutputSchema),
+  goals: z.array(goalOutputSchema),
+  health: healthOutputSchema,
+});
+
+const verifyKeyOutputSchema = z.object({
+  valid: z.boolean(),
+  status: z.string(),
+});
+
+const strictEmptySchema = z.object({}).strict();
+const strictEmptyAnySchema = strictEmptySchema as unknown as AnySchema;
+
+let cachedApiKey: string | null | undefined;
 
 function getPackageVersion(): string {
   try {
@@ -143,33 +250,27 @@ function roundCurrency(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-function compactTransaction(t: Transaction): CompactTransaction {
-  return {
-    d: t.date || '',
-    a: roundCurrency(t.amount ?? 0),
-    m: t.merchant_name || t.name || 'Unknown',
-    c: t.primary_category ?? null,
-  };
+function normalizeAccountType(value: string | null | undefined): WarmAccountType {
+  switch (value) {
+    case 'depository':
+    case 'credit':
+    case 'loan':
+    case 'investment':
+      return value;
+    default:
+      return 'other';
+  }
 }
 
-function inDateRange(t: Transaction, since?: string, until?: string): boolean {
-  if (!t.date) return false;
-  if (since && t.date < since) return false;
-  if (until && t.date > until) return false;
-  return true;
-}
-
-function calculateSummary(transactions: CompactTransaction[]) {
-  if (transactions.length === 0) {
-    return { total: 0, count: 0, avg: 0 };
+function getRequestSignal(timeoutMs: number): AbortSignal {
+  if (typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(timeoutMs);
   }
 
-  const total = transactions.reduce((sum, t) => sum + t.a, 0);
-  return {
-    total: roundCurrency(total),
-    count: transactions.length,
-    avg: roundCurrency(total / transactions.length),
-  };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref?.();
+  return controller.signal;
 }
 
 export function getConfiguredApiKey(): string | null {
@@ -201,15 +302,17 @@ function resolveApiKey(explicitApiKey?: string): string | null {
   return getConfiguredApiKey();
 }
 
-function getRequestSignal(timeoutMs: number): AbortSignal {
-  if (typeof AbortSignal.timeout === 'function') {
-    return AbortSignal.timeout(timeoutMs);
-  }
+function asGeneratedAt(...values: Array<string | null | undefined>): string {
+  return values.find((value): value is string => Boolean(value)) || new Date().toISOString();
+}
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  timer.unref?.();
-  return controller.signal;
+function createTextContent(data: unknown): Array<{ type: 'text'; text: string }> {
+  return [
+    {
+      type: 'text',
+      text: JSON.stringify(data),
+    },
+  ];
 }
 
 export async function apiRequest(
@@ -275,166 +378,98 @@ export async function apiRequest(
   return response.json();
 }
 
-export async function verifyWarmApiKey(apiKey: string): Promise<{
-  valid: boolean;
-  status: string;
-}> {
-  const response = (await apiRequest('/api/verify', {}, { apiKey })) as {
-    valid?: boolean;
-    status?: string;
-  };
-
-  return {
-    valid: response.valid === true,
-    status: response.status || (response.valid ? 'ok' : 'invalid'),
-  };
+export async function verifyWarmApiKey(apiKey: string): Promise<z.infer<typeof verifyKeyOutputSchema>> {
+  return verifyReusableWarmApiKey(apiKey);
 }
 
-async function handleGetAccounts(): Promise<unknown> {
+async function getAccountsResult(): Promise<z.infer<typeof getAccountsOutputSchema>> {
   const response = (await apiRequest('/api/export', { dataset: 'accounts' })) as {
     accounts?: ApiAccount[];
-    generated_at?: string;
   };
 
   return {
     accounts: (response.accounts || []).map((account) => ({
       name: account.name || 'Unknown Account',
-      type: account.type || 'other',
+      type: normalizeAccountType(account.type),
+      subtype: account.subtype || null,
       balance: roundCurrency(account.current_balance ?? 0),
+      institution: account.institution_name || null,
+      mask: account.mask || null,
     })),
   };
 }
 
-async function fetchAllTransactions(since?: string, until?: string): Promise<{
-  transactions: CompactTransaction[];
-  summary: ReturnType<typeof calculateSummary>;
-}> {
-  const cacheKey = `${since || ''}|${until || ''}`;
-  if (
-    txnCache &&
-    txnCache.key === cacheKey &&
-    Date.now() - txnCache.fetchedAt < TRANSACTION_CACHE_TTL_MS
-  ) {
-    return {
-      transactions: txnCache.transactions,
-      summary: txnCache.summary,
-    };
-  }
-
-  let transactions: Transaction[] = [];
-  let cursor: string | undefined;
-  let pagesFetched = 0;
-  let scanned = 0;
-
-  do {
-    const params: Record<string, string> = {
-      limit: String(TRANSACTION_PAGE_SIZE),
-    };
-
-    if (since && !cursor) {
-      params.last_knowledge = since;
-    }
-    if (cursor) {
-      params.cursor = cursor;
-    }
-
-    const response = (await apiRequest('/api/transactions', params)) as {
-      transactions?: Transaction[];
-      pagination?: { next_cursor: string | null };
-    };
-
-    const batch = response.transactions || [];
-    transactions.push(...batch);
-    scanned += batch.length;
-    pagesFetched += 1;
-    cursor = response.pagination?.next_cursor ?? undefined;
-  } while (cursor && pagesFetched < MAX_TRANSACTION_PAGES && scanned < MAX_TRANSACTION_SCAN);
-
-  if (until) {
-    transactions = transactions.filter((t) => inDateRange(t, since, until));
-  }
-
-  const compactTxns = transactions.map(compactTransaction);
-  const summary = calculateSummary(compactTxns);
-
-  txnCache = {
-    key: cacheKey,
-    transactions: compactTxns,
-    summary,
-    fetchedAt: Date.now(),
+async function getTransactionsResult(
+  args: z.infer<typeof getTransactionsInputSchema>
+): Promise<z.infer<typeof getTransactionsOutputSchema>> {
+  const params: Record<string, string> = {
+    limit: String(args.limit),
   };
 
-  return { transactions: compactTxns, summary };
-}
+  if (args.cursor) {
+    params.cursor = args.cursor;
+  }
+  if (args.last_knowledge) {
+    params.last_knowledge = args.last_knowledge;
+  }
 
-async function handleGetTransactions(args?: Record<string, unknown>): Promise<unknown> {
-  const since = args?.since ? String(args.since) : undefined;
-  const until = args?.until ? String(args.until) : undefined;
-  const limit = Math.min(Math.max(args?.limit ? Number(args.limit) : 500, 1), 1000);
-  const offset = Math.max(args?.offset ? Number(args.offset) : 0, 0);
-
-  const { transactions, summary } = await fetchAllTransactions(since, until);
-  const total = transactions.length;
+  const response = (await apiRequest('/api/transactions', params)) as ApiTransactionPage;
+  const nextCursor = response.pagination?.next_cursor ?? null;
+  const limit = response.pagination?.limit ?? args.limit;
 
   return {
-    summary,
-    txns: transactions.slice(offset, offset + limit),
-    total,
-    has_more: offset + limit < total,
-  };
-}
-
-async function handleGetSnapshots(args?: Record<string, unknown>): Promise<unknown> {
-  const since = args?.since ? String(args.since) : undefined;
-  const response = (await apiRequest('/api/export', {
-    dataset: 'snapshots',
-    ...(since ? { since } : {}),
-  })) as {
-    snapshots?: ApiSnapshot[];
-    generated_at?: string;
-  };
-
-  const limit = args?.limit ? Number(args.limit) : 30;
-  const normalized = (response.snapshots || []).map((snapshot) => ({
-    date: snapshot.snapshot_date || snapshot.d || '',
-    net_worth: snapshot.net_worth ?? snapshot.nw ?? 0,
-    total_assets: snapshot.total_assets ?? snapshot.a ?? 0,
-    total_liabilities: snapshot.total_liabilities ?? snapshot.l ?? 0,
-  }));
-
-  let filtered = normalized;
-  if (since) {
-    filtered = filtered.filter((snapshot) => snapshot.date >= since);
-  }
-
-  filtered.sort((a, b) => b.date.localeCompare(a.date));
-  if (limit > 0) {
-    filtered = filtered.slice(0, limit);
-  }
-
-  return {
-    snapshots: filtered.map((snapshot) => ({
-      d: snapshot.date,
-      nw: roundCurrency(snapshot.net_worth),
-      a: roundCurrency(snapshot.total_assets),
-      l: roundCurrency(snapshot.total_liabilities),
+    generated_at: response.generated_at || null,
+    next_knowledge: response.next_knowledge || null,
+    txns: (response.transactions || []).map((transaction) => ({
+      id: transaction.id || null,
+      date: transaction.date || null,
+      amount: roundCurrency(transaction.amount ?? 0),
+      merchant: transaction.merchant_name || null,
+      description: transaction.name || null,
+      category: transaction.primary_category ?? null,
+      detailed_category: transaction.detailed_category ?? null,
     })),
+    pagination: {
+      limit,
+      next_cursor: nextCursor,
+      has_more: nextCursor !== null,
+    },
   };
 }
 
-async function handleGetRecurring(args?: Record<string, unknown>): Promise<unknown> {
-  const since = args?.since ? String(args.since) : undefined;
-  const limit = Math.min(Math.max(args?.limit ? Number(args.limit) : 100, 1), 500);
-  const response = (await apiRequest('/api/export', {
-    dataset: 'recurring',
-    ...(since ? { since } : {}),
-  })) as {
-    recurring_transactions?: ApiRecurring[];
-    generated_at?: string;
-  };
+async function getFinancialStateResult(): Promise<z.infer<typeof getFinancialStateOutputSchema>> {
+  const [snapshotsResponse, recurringResponse, budgetsResponse, goalsResponse, healthResponse] =
+    (await Promise.all([
+      apiRequest('/api/export', { dataset: 'snapshots' }),
+      apiRequest('/api/export', { dataset: 'recurring' }),
+      apiRequest('/api/export', { dataset: 'budgets' }),
+      apiRequest('/api/export', { dataset: 'goals' }),
+      apiRequest('/api/export', { dataset: 'health' }),
+    ])) as [
+      { generated_at?: string; snapshots?: ApiSnapshot[] },
+      { generated_at?: string; recurring_transactions?: ApiRecurring[] },
+      { generated_at?: string; budgets?: ApiBudget[] },
+      { generated_at?: string; goals?: ApiGoal[] },
+      ApiHealth & { generated_at?: string }
+    ];
 
   return {
-    recurring: (response.recurring_transactions || []).slice(0, limit).map((stream) => ({
+    generated_at: asGeneratedAt(
+      snapshotsResponse.generated_at,
+      recurringResponse.generated_at,
+      budgetsResponse.generated_at,
+      goalsResponse.generated_at,
+      healthResponse.generated_at
+    ),
+    snapshots: (snapshotsResponse.snapshots || [])
+      .map((snapshot) => ({
+        date: snapshot.snapshot_date || snapshot.d || '',
+        net_worth: roundCurrency(snapshot.net_worth ?? snapshot.nw ?? 0),
+        total_assets: roundCurrency(snapshot.total_assets ?? snapshot.a ?? 0),
+        total_liabilities: roundCurrency(snapshot.total_liabilities ?? snapshot.l ?? 0),
+      }))
+      .filter((snapshot) => snapshot.date.length > 0),
+    recurring: (recurringResponse.recurring_transactions || []).map((stream) => ({
       merchant: stream.merchant_name || stream.description || 'Unknown',
       amount: roundCurrency(Math.abs(stream.average_amount ?? stream.last_amount ?? 0)),
       frequency: stream.frequency || 'UNKNOWN',
@@ -442,17 +477,7 @@ async function handleGetRecurring(args?: Record<string, unknown>): Promise<unkno
       type: stream.stream_type || null,
       active: stream.is_active !== false,
     })),
-  };
-}
-
-async function handleGetBudgets(): Promise<unknown> {
-  const response = (await apiRequest('/api/export', { dataset: 'budgets' })) as {
-    budgets?: ApiBudget[];
-    generated_at?: string;
-  };
-
-  return {
-    budgets: (response.budgets || []).map((budget) => ({
+    budgets: (budgetsResponse.budgets || []).map((budget) => ({
       name: budget.name || 'Unnamed Budget',
       amount: roundCurrency(budget.amount ?? 0),
       spent: roundCurrency(budget.spent ?? 0),
@@ -461,17 +486,7 @@ async function handleGetBudgets(): Promise<unknown> {
       period: budget.period || 'monthly',
       status: budget.status || null,
     })),
-  };
-}
-
-async function handleGetGoals(): Promise<unknown> {
-  const response = (await apiRequest('/api/export', { dataset: 'goals' })) as {
-    goals?: ApiGoal[];
-    generated_at?: string;
-  };
-
-  return {
-    goals: (response.goals || []).map((goal) => ({
+    goals: (goalsResponse.goals || []).map((goal) => ({
       name: goal.name || 'Unnamed Goal',
       target: roundCurrency(goal.target ?? 0),
       current: roundCurrency(goal.current ?? 0),
@@ -484,22 +499,24 @@ async function handleGetGoals(): Promise<unknown> {
           ? roundCurrency(goal.monthly_contribution_needed)
           : null,
     })),
+    health: {
+      score: healthResponse.score ?? null,
+      label: healthResponse.label || null,
+      data_completeness: healthResponse.data_completeness ?? null,
+      pillars: healthResponse.pillars
+        ? {
+            spend: healthResponse.pillars.spend ?? null,
+            save: healthResponse.pillars.save ?? null,
+            borrow: healthResponse.pillars.borrow ?? null,
+            build: healthResponse.pillars.build ?? null,
+          }
+        : null,
+      message: healthResponse.message || null,
+    },
   };
 }
 
-async function handleGetHealth(): Promise<unknown> {
-  const response = (await apiRequest('/api/export', { dataset: 'health' })) as ApiHealth;
-
-  return {
-    score: response.score ?? null,
-    label: response.label || null,
-    pillars: response.pillars || null,
-    data_completeness: response.data_completeness ?? null,
-    ...(response.message ? { message: response.message } : {}),
-  };
-}
-
-async function handleVerifyKey(): Promise<unknown> {
+async function getVerifyKeyResult(): Promise<z.infer<typeof verifyKeyOutputSchema>> {
   const apiKey = getConfiguredApiKey();
   if (!apiKey) {
     throw new Error('WARM_API_KEY not set. Run "npx @warmio/mcp" to configure.');
@@ -508,167 +525,13 @@ async function handleVerifyKey(): Promise<unknown> {
   return verifyWarmApiKey(apiKey);
 }
 
-const toolHandlers: Record<string, (args?: Record<string, unknown>) => Promise<unknown>> = {
-  get_accounts: handleGetAccounts,
-  get_transactions: handleGetTransactions,
-  get_recurring: handleGetRecurring,
-  get_snapshots: handleGetSnapshots,
-  get_budgets: handleGetBudgets,
-  get_goals: handleGetGoals,
-  get_health: handleGetHealth,
-  verify_key: handleVerifyKey,
-};
-
-const warmTools = [
-  {
-    name: 'get_accounts',
-    description:
-      'Get all connected bank accounts with current balances.\n\nReturns: { accounts: Array<{ name: string; type: string; balance: number }> }\n\nAccount types: depository (checking/savings), credit, loan, investment, other.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
-    },
-    annotations: { readOnlyHint: true },
-  },
-  {
-    name: 'get_transactions',
-    description:
-      'Get transactions with date filtering and pagination. Returns a summary of the FULL date range plus a paginated slice of individual transactions.\n\nAmounts: positive = expense/debit, negative = income/credit (Plaid convention).\nCategories in field `c`: INCOME, TRANSFER_IN = income. FOOD_AND_DRINK, TRANSPORTATION, ENTERTAINMENT, GENERAL_MERCHANDISE, RENT_AND_UTILITIES, LOAN_PAYMENTS, etc. = expenses.\n\nReturns: { summary: { total: number; count: number; avg: number }; txns: Array<{ d: string; a: number; m: string; c: string | null }>; total: number; has_more: boolean }\n\nCall multiple times with increasing offset to paginate. The summary is always computed over ALL matching transactions regardless of limit/offset.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        since: {
-          type: 'string',
-          description: 'Start date inclusive (YYYY-MM-DD). Omit to get all available transactions.',
-        },
-        until: {
-          type: 'string',
-          description: 'End date inclusive (YYYY-MM-DD). Omit for no end date filter.',
-        },
-        limit: {
-          type: 'number',
-          description: 'Max transactions per page (default 500, max 1000).',
-        },
-        offset: {
-          type: 'number',
-          description: 'Skip N transactions for pagination (default 0).',
-        },
-      },
-    },
-    annotations: { readOnlyHint: true },
-  },
-  {
-    name: 'get_recurring',
-    description:
-      'Get recurring subscriptions and income streams.\n\nReturns: { recurring: Array<{ merchant: string; amount: number; frequency: string; next_date: string | null; type: string | null; active: boolean }> }',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        since: {
-          type: 'string',
-          description: 'Start date inclusive (YYYY-MM-DD). Omit to get all recurring streams.',
-        },
-        limit: {
-          type: 'number',
-          description: 'Max recurring streams to return (default 100, max 500).',
-        },
-      },
-    },
-    annotations: { readOnlyHint: true },
-  },
-  {
-    name: 'get_snapshots',
-    description:
-      'Get daily net worth snapshots over time.\n\nReturns: { snapshots: Array<{ d: string; nw: number; a: number; l: number }> }\n\nFields: d = date, nw = net worth, a = total assets, l = total liabilities. Sorted newest first.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        limit: {
-          type: 'number',
-          description: 'Max snapshots to return (default 30).',
-        },
-        since: {
-          type: 'string',
-          description: 'Start date inclusive (YYYY-MM-DD).',
-        },
-      },
-    },
-    annotations: { readOnlyHint: true },
-  },
-  {
-    name: 'get_budgets',
-    description:
-      'Get all budgets with spending progress.\n\nReturns: { budgets: Array<{ name: string; amount: number; spent: number; remaining: number; percent_used: number; period: string; status: string | null }> }',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
-    },
-    annotations: { readOnlyHint: true },
-  },
-  {
-    name: 'get_goals',
-    description:
-      'Get all savings goals with progress.\n\nReturns: { goals: Array<{ name: string; target: number; current: number; progress_percent: number; target_date: string | null; status: string | null; category: string | null; monthly_contribution_needed: number | null }> }',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
-    },
-    annotations: { readOnlyHint: true },
-  },
-  {
-    name: 'get_health',
-    description:
-      'Get financial health score and pillar breakdown.\n\nReturns: { score: number | null; label: string | null; pillars: { spend: number; save: number; borrow: number; build: number } | null; data_completeness: number | null }',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
-    },
-    annotations: { readOnlyHint: true },
-  },
-  {
-    name: 'verify_key',
-    description: 'Check if the API key is valid.\n\nReturns: { valid: boolean; status: string }',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
-    },
-    annotations: { readOnlyHint: true },
-  },
-] as const;
-
-export function createWarmServer(): Server {
-  const server = new Server(WARM_SERVER_INFO, { capabilities: { tools: {} } });
-
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...warmTools],
-  }));
-
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-
-    try {
-      const handler = toolHandlers[name];
-      if (!handler) {
-        throw new Error(`Unknown tool: ${name}`);
-      }
-
-      const data = await handler(args as Record<string, unknown> | undefined);
-      return {
-        content: [{ type: 'text', text: JSON.stringify(data) }],
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
-        isError: true,
-      };
-    }
+export function createWarmServer(): McpServer {
+  return createReusableWarmServer({
+    serverInfo: WARM_SERVER_INFO,
   });
-
-  return server;
 }
 
-export async function startStdioServer(): Promise<Server> {
+export async function startStdioServer(): Promise<McpServer> {
   const server = createWarmServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
