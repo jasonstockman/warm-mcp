@@ -152,6 +152,40 @@ export interface WarmApiHealthResponse {
   generated_at?: string;
 }
 
+export interface WarmApiLiability {
+  account_id?: string | null;
+  type?: string | null;
+  balance?: number | null;
+  apr_percentage?: number | null;
+  interest_rate_percentage?: number | null;
+  interest_rate_type?: string | null;
+  minimum_payment?: number | null;
+  next_payment_due_date?: string | null;
+  expected_payoff_date?: string | null;
+  origination_principal_amount?: number | null;
+  is_overdue?: boolean | null;
+}
+
+export interface WarmApiLiabilitiesResponse {
+  liabilities?: WarmApiLiability[];
+  generated_at?: string;
+}
+
+export interface WarmApiHolding {
+  account_id?: string | null;
+  security_name?: string | null;
+  symbol?: string | null;
+  type?: string | null;
+  quantity?: number | null;
+  value?: number | null;
+  cost_basis?: number | null;
+}
+
+export interface WarmApiHoldingsResponse {
+  holdings?: WarmApiHolding[];
+  generated_at?: string;
+}
+
 export interface WarmApiVerifyResponse {
   valid?: boolean;
   status?: string;

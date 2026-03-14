@@ -146,6 +146,37 @@ export const healthPillarsSchema = z
   })
   .strict();
 
+export const liabilitySchema = z
+  .object({
+    account_id: z.string(),
+    type: z.string(),
+    balance: z.number().finite().nullable(),
+    apr_percentage: z.number().finite().nullable(),
+    minimum_payment: z.number().finite().nullable(),
+    next_payment_due_date: dateSchema.nullable(),
+    is_overdue: z.boolean().nullable(),
+  })
+  .strict();
+
+export const holdingSchema = z
+  .object({
+    account_id: z.string(),
+    security_name: z.string().nullable(),
+    symbol: z.string().nullable(),
+    type: z.string().nullable(),
+    quantity: z.number().finite(),
+    value: z.number().finite().nullable(),
+    cost_basis: z.number().finite().nullable(),
+  })
+  .strict();
+
+export const categorySpendingSchema = z
+  .object({
+    category: z.string(),
+    amount: z.number().finite(),
+  })
+  .strict();
+
 export const financialHealthSchema = z
   .object({
     score: z.number().finite().nullable(),
@@ -164,6 +195,9 @@ export const getFinancialStateOutputSchema = z
     budgets: z.array(budgetSchema),
     goals: z.array(goalSchema),
     health: financialHealthSchema,
+    liabilities: z.array(liabilitySchema),
+    holdings: z.array(holdingSchema),
+    category_spending: z.array(categorySpendingSchema),
   })
   .strict();
 

@@ -28,6 +28,10 @@ import type {
   WarmApiGoal,
   WarmApiGoalsResponse,
   WarmApiHealthResponse,
+  WarmApiHolding,
+  WarmApiHoldingsResponse,
+  WarmApiLiability,
+  WarmApiLiabilitiesResponse,
   WarmApiRecurring,
   WarmApiRecurringResponse,
   WarmApiSnapshot,
@@ -151,6 +155,30 @@ function normalizeGoal(goal: WarmApiGoal): GetFinancialStateOutput['goals'][numb
       goal.monthly_contribution_needed == null
         ? null
         : roundMoney(goal.monthly_contribution_needed),
+  };
+}
+
+function normalizeLiability(liability: WarmApiLiability): GetFinancialStateOutput['liabilities'][number] {
+  return {
+    account_id: liability.account_id || '',
+    type: liability.type || 'unknown',
+    balance: liability.balance == null ? null : roundMoney(liability.balance),
+    apr_percentage: liability.apr_percentage ?? liability.interest_rate_percentage ?? null,
+    minimum_payment: liability.minimum_payment == null ? null : roundMoney(liability.minimum_payment),
+    next_payment_due_date: liability.next_payment_due_date ?? null,
+    is_overdue: liability.is_overdue ?? null,
+  };
+}
+
+function normalizeHolding(holding: WarmApiHolding): GetFinancialStateOutput['holdings'][number] {
+  return {
+    account_id: holding.account_id || '',
+    security_name: holding.security_name ?? null,
+    symbol: holding.symbol ?? null,
+    type: holding.type ?? null,
+    quantity: holding.quantity ?? 0,
+    value: holding.value == null ? null : roundMoney(holding.value),
+    cost_basis: holding.cost_basis == null ? null : roundMoney(holding.cost_basis),
   };
 }
 
@@ -312,14 +340,33 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
   }
 
   async function getFinancialState(): Promise<GetFinancialStateOutput> {
-    const [snapshotsResponse, recurringResponse, budgetsResponse, goalsResponse, healthResponse] =
-      await Promise.all([
-        apiRequest<WarmApiSnapshotsResponse>('/api/export', { dataset: 'snapshots' }, options),
-        apiRequest<WarmApiRecurringResponse>('/api/export', { dataset: 'recurring' }, options),
-        apiRequest<WarmApiBudgetsResponse>('/api/export', { dataset: 'budgets' }, options),
-        apiRequest<WarmApiGoalsResponse>('/api/export', { dataset: 'goals' }, options),
-        apiRequest<WarmApiHealthResponse>('/api/export', { dataset: 'health' }, options),
-      ]);
+    const [
+      snapshotsResponse,
+      recurringResponse,
+      budgetsResponse,
+      goalsResponse,
+      healthResponse,
+      liabilitiesResponse,
+      holdingsResponse,
+    ] = await Promise.all([
+      apiRequest<WarmApiSnapshotsResponse>('/api/export', { dataset: 'snapshots' }, options),
+      apiRequest<WarmApiRecurringResponse>('/api/export', { dataset: 'recurring' }, options),
+      apiRequest<WarmApiBudgetsResponse>('/api/export', { dataset: 'budgets' }, options),
+      apiRequest<WarmApiGoalsResponse>('/api/export', { dataset: 'goals' }, options),
+      apiRequest<WarmApiHealthResponse>('/api/export', { dataset: 'health' }, options),
+      apiRequest<WarmApiLiabilitiesResponse>('/api/export', { dataset: 'liabilities' }, options),
+      apiRequest<WarmApiHoldingsResponse>('/api/export', { dataset: 'holdings' }, options),
+    ]);
+
+    // Extract category spending from the most recent snapshot's spending_by_category
+    const snapshots = snapshotsResponse.snapshots || [];
+    const latestWithCategories = snapshots.find(
+      (s) => Array.isArray((s as Record<string, unknown>).spending_by_category)
+    ) as (WarmApiSnapshot & { spending_by_category?: Array<{ category: string; amount: number }> }) | undefined;
+    const categorySpending = (latestWithCategories?.spending_by_category || []).map((c) => ({
+      category: c.category || 'Unknown',
+      amount: roundMoney(Math.abs(c.amount ?? 0)),
+    }));
 
     return {
       generated_at: asGeneratedAt(
@@ -329,7 +376,7 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
         goalsResponse.generated_at,
         healthResponse.generated_at
       ),
-      snapshots: (snapshotsResponse.snapshots || [])
+      snapshots: snapshots
         .map(normalizeSnapshot)
         .filter((snapshot): snapshot is NonNullable<typeof snapshot> => snapshot !== null),
       recurring: (recurringResponse.recurring_transactions || []).map(normalizeRecurring),
@@ -357,6 +404,9 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
           : null,
         message: healthResponse.message ?? null,
       },
+      liabilities: (liabilitiesResponse.liabilities || []).map(normalizeLiability),
+      holdings: (holdingsResponse.holdings || []).map(normalizeHolding),
+      category_spending: categorySpending,
     };
   }
 
@@ -410,7 +460,7 @@ export function registerWarmTools(
       'get_financial_state',
       {
         description:
-          'Read-only broad financial state bundle with snapshots, recurring payments, budgets, goals, and financial health.',
+          'Read-only broad financial state bundle with snapshots, recurring payments, budgets, goals, financial health, liabilities, holdings, and category spending.',
         inputSchema: emptyInputSchema as unknown as AnySchema,
         outputSchema: getFinancialStateOutputSchema as unknown as AnySchema,
         annotations: READ_ONLY_TOOL_ANNOTATIONS,
