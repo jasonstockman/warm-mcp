@@ -6,14 +6,16 @@ import type { AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import {
   emptyInputSchema,
-  getAccountsOutputSchema,
-  getFinancialStateOutputSchema,
   getTransactionsInputSchema,
   getTransactionsOutputSchema,
+  getStateInputSchema,
+  getStateOutputSchema,
   verifyKeyOutputSchema,
   type Account,
   type GetAccountsOutput,
   type GetFinancialStateOutput,
+  type GetStateInput,
+  type GetStateOutput,
   type GetTransactionsInput,
   type GetTransactionsOutput,
   type VerifyKeyOutput,
@@ -78,6 +80,197 @@ function roundMoney(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+function normalizeDateOnly(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const directMatch = trimmed.match(/^\d{4}-\d{2}-\d{2}$/);
+  if (directMatch) {
+    return directMatch[0];
+  }
+
+  const dateTimeMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2})T/);
+  if (dateTimeMatch) {
+    return dateTimeMatch[1] ?? null;
+  }
+
+  const embeddedMatch = trimmed.match(/\b\d{4}-\d{2}-\d{2}\b/);
+  return embeddedMatch?.[0] ?? null;
+}
+
+interface QuerySelection {
+  [key: string]: QuerySelection | true;
+}
+
+type QueryToken =
+  | { type: 'brace_open' }
+  | { type: 'brace_close' }
+  | { type: 'name'; value: string };
+
+const ROOT_QUERY_FIELDS = new Set(['accounts', 'financial_state']);
+
+function tokenizeQuery(query: string): QueryToken[] {
+  const tokens: QueryToken[] = [];
+
+  for (let index = 0; index < query.length; ) {
+    const char = query[index] ?? '';
+
+    if (/\s|,/.test(char)) {
+      index += 1;
+      continue;
+    }
+
+    if (char === '#') {
+      while (index < query.length && query[index] !== '\n') {
+        index += 1;
+      }
+      continue;
+    }
+
+    if (char === '{') {
+      tokens.push({ type: 'brace_open' });
+      index += 1;
+      continue;
+    }
+
+    if (char === '}') {
+      tokens.push({ type: 'brace_close' });
+      index += 1;
+      continue;
+    }
+
+    if (/[A-Za-z_]/.test(char)) {
+      let end = index + 1;
+      while (end < query.length && /[A-Za-z0-9_]/.test(query[end] ?? '')) {
+        end += 1;
+      }
+      tokens.push({ type: 'name', value: query.slice(index, end) });
+      index = end;
+      continue;
+    }
+
+    throw new Error(`Unsupported query syntax near "${query.slice(index, index + 12)}"`);
+  }
+
+  return tokens;
+}
+
+function mergeSelection(
+  left: QuerySelection | true | undefined,
+  right: QuerySelection | true
+): QuerySelection | true {
+  if (!left) {
+    return right;
+  }
+
+  if (left === true || right === true) {
+    return true;
+  }
+
+  const merged: QuerySelection = { ...left };
+  for (const [key, value] of Object.entries(right)) {
+    merged[key] = mergeSelection(merged[key], value);
+  }
+  return merged;
+}
+
+function parseQuerySelection(query: string): QuerySelection {
+  const tokens = tokenizeQuery(query);
+  let index = 0;
+
+  function parseSelectionSet(withOpeningBrace: boolean): QuerySelection {
+    if (withOpeningBrace) {
+      const openToken = tokens[index];
+      if (openToken?.type !== 'brace_open') {
+        throw new Error('Expected "{" to start a selection set.');
+      }
+      index += 1;
+    }
+
+    const selection: QuerySelection = {};
+
+    while (index < tokens.length) {
+      const token = tokens[index];
+      if (!token) break;
+
+      if (token.type === 'brace_close') {
+        if (!withOpeningBrace) {
+          throw new Error('Unexpected "}" in query.');
+        }
+        index += 1;
+        return selection;
+      }
+
+      if (token.type !== 'name') {
+        throw new Error('Expected a field name in query.');
+      }
+
+      index += 1;
+      const nextToken = tokens[index];
+      const childSelection =
+        nextToken?.type === 'brace_open' ? parseSelectionSet(true) : true;
+
+      selection[token.value] = mergeSelection(selection[token.value], childSelection);
+    }
+
+    if (withOpeningBrace) {
+      throw new Error('Unclosed "{" in query.');
+    }
+
+    return selection;
+  }
+
+  const selection =
+    tokens[0]?.type === 'brace_open' ? parseSelectionSet(true) : parseSelectionSet(false);
+
+  if (index !== tokens.length) {
+    throw new Error('Unexpected trailing tokens in query.');
+  }
+
+  for (const rootField of Object.keys(selection)) {
+    if (!ROOT_QUERY_FIELDS.has(rootField)) {
+      throw new Error(
+        `Unknown root field "${rootField}". Supported roots: accounts, financial_state.`
+      );
+    }
+  }
+
+  return selection;
+}
+
+function projectSelection(source: unknown, selection: QuerySelection | true): unknown {
+  if (selection === true) {
+    return source;
+  }
+
+  if (source == null) {
+    return source;
+  }
+
+  if (Array.isArray(source)) {
+    return source.map((item) => projectSelection(item, selection));
+  }
+
+  if (typeof source !== 'object') {
+    return source;
+  }
+
+  const sourceRecord = source as Record<string, unknown>;
+  const projected: Record<string, unknown> = {};
+
+  for (const [field, childSelection] of Object.entries(selection)) {
+    projected[field] = projectSelection(sourceRecord[field] ?? null, childSelection);
+  }
+
+  return projected;
+}
+
 function getRequestSignal(timeoutMs: number): AbortSignal {
   if (typeof AbortSignal.timeout === 'function') {
     return AbortSignal.timeout(timeoutMs);
@@ -103,17 +296,20 @@ function normalizeAccountType(rawType: string | null | undefined): Account['type
 
 function normalizeAccount(account: WarmApiAccount): GetAccountsOutput['accounts'][number] {
   return {
+    account_id: account.account_id ?? null,
     name: account.name || 'Unknown Account',
     type: normalizeAccountType(account.type),
     subtype: account.subtype ?? null,
     balance: roundMoney(account.current_balance ?? 0),
+    available_balance:
+      account.available_balance == null ? null : roundMoney(account.available_balance),
     institution: account.institution_name ?? null,
     mask: account.mask ?? null,
   };
 }
 
 function normalizeSnapshot(snapshot: WarmApiSnapshot): GetFinancialStateOutput['snapshots'][number] | null {
-  const date = snapshot.snapshot_date || snapshot.period_end || null;
+  const date = normalizeDateOnly(snapshot.snapshot_date || snapshot.period_end || null);
   if (!date) {
     return null;
   }
@@ -136,7 +332,7 @@ function normalizeRecurring(stream: WarmApiRecurring): GetFinancialStateOutput['
     merchant: stream.merchant_name || stream.description || 'Unknown',
     amount: roundMoney(Math.abs(stream.average_amount ?? stream.last_amount ?? 0)),
     frequency: stream.frequency || 'UNKNOWN',
-    next_date: stream.next_date ?? null,
+    next_date: normalizeDateOnly(stream.next_date),
     type: stream.stream_type ?? null,
     active: stream.is_active !== false,
   };
@@ -148,7 +344,7 @@ function normalizeGoal(goal: WarmApiGoal): GetFinancialStateOutput['goals'][numb
     target: roundMoney(goal.target ?? 0),
     current: roundMoney(goal.current ?? 0),
     progress_percent: roundMoney(goal.progress_percent ?? 0),
-    target_date: goal.target_date ?? null,
+    target_date: normalizeDateOnly(goal.target_date),
     status: goal.status ?? null,
     category: goal.category ?? null,
     monthly_contribution_needed:
@@ -165,7 +361,7 @@ function normalizeLiability(liability: WarmApiLiability): GetFinancialStateOutpu
     balance: liability.balance == null ? null : roundMoney(liability.balance),
     apr_percentage: liability.apr_percentage ?? liability.interest_rate_percentage ?? null,
     minimum_payment: liability.minimum_payment == null ? null : roundMoney(liability.minimum_payment),
-    next_payment_due_date: liability.next_payment_due_date ?? null,
+    next_payment_due_date: normalizeDateOnly(liability.next_payment_due_date),
     is_overdue: liability.is_overdue ?? null,
   };
 }
@@ -324,7 +520,8 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
       next_knowledge: response.next_knowledge ?? null,
       txns: (response.transactions || []).map((transaction) => ({
         id: transaction.id ?? null,
-        date: transaction.date ?? null,
+        account_id: transaction.account_id ?? null,
+        date: normalizeDateOnly(transaction.date),
         amount: roundMoney(transaction.amount ?? 0),
         merchant: transaction.merchant_name ?? null,
         description: transaction.name ?? null,
@@ -410,6 +607,21 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
     };
   }
 
+  async function getState(input: GetStateInput): Promise<GetStateOutput> {
+    const selection = parseQuerySelection(input.query);
+    const result: Record<string, unknown> = {};
+
+    if (selection.accounts) {
+      result.accounts = projectSelection((await getAccounts()).accounts, selection.accounts);
+    }
+
+    if (selection.financial_state) {
+      result.financial_state = projectSelection(await getFinancialState(), selection.financial_state);
+    }
+
+    return { data: result };
+  }
+
   async function verifyKey(): Promise<VerifyKeyOutput> {
     const response = await apiRequest<WarmApiVerifyResponse>('/api/verify', {}, options);
     return {
@@ -419,9 +631,8 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
   }
 
   return {
-    getAccounts,
     getTransactions,
-    getFinancialState,
+    getState,
     verifyKey,
   };
 }
@@ -433,16 +644,17 @@ export function registerWarmTools(
   const client = createWarmApiClient(options);
 
   return {
-    get_accounts: server.registerTool(
-      'get_accounts',
+    get_state: server.registerTool(
+      'get_state',
       {
         description:
-          'Read-only list of connected financial accounts with balances, subtypes, institutions, and masks when available.',
-        inputSchema: emptyInputSchema as unknown as AnySchema,
-        outputSchema: getAccountsOutputSchema as unknown as AnySchema,
+          'GraphQL-like read-only state query over accounts and financial_state.',
+        inputSchema: getStateInputSchema as unknown as AnySchema,
+        outputSchema: getStateOutputSchema as unknown as AnySchema,
         annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
-      async () => createStructuredToolResult(await client.getAccounts())
+      async (args: GetStateInput) =>
+        createStructuredToolResult(await client.getState(args))
     ),
     get_transactions: server.registerTool(
       'get_transactions',
@@ -455,17 +667,6 @@ export function registerWarmTools(
       },
       async (args: GetTransactionsInput) =>
         createStructuredToolResult(await client.getTransactions(args))
-    ),
-    get_financial_state: server.registerTool(
-      'get_financial_state',
-      {
-        description:
-          'Read-only broad financial state bundle with snapshots, recurring payments, budgets, goals, financial health, liabilities, holdings, and category spending.',
-        inputSchema: emptyInputSchema as unknown as AnySchema,
-        outputSchema: getFinancialStateOutputSchema as unknown as AnySchema,
-        annotations: READ_ONLY_TOOL_ANNOTATIONS,
-      },
-      async () => createStructuredToolResult(await client.getFinancialState())
     ),
     verify_key: server.registerTool(
       'verify_key',

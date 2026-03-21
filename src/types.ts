@@ -1,17 +1,16 @@
 import type { McpServer, RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Implementation } from '@modelcontextprotocol/sdk/types.js';
 import type {
-  GetAccountsOutput,
-  GetFinancialStateOutput,
   GetTransactionsInput,
   GetTransactionsOutput,
+  GetStateInput,
+  GetStateOutput,
   VerifyKeyOutput,
 } from './schemas.js';
 
 export const WARM_TOOL_NAMES = [
-  'get_accounts',
+  'get_state',
   'get_transactions',
-  'get_financial_state',
   'verify_key',
 ] as const;
 
@@ -33,17 +32,18 @@ export type WarmToolRegistrationTarget = McpServer;
 export type RegisteredWarmTools = Record<WarmToolName, RegisteredTool>;
 
 export interface WarmApiClient {
-  getAccounts(): Promise<GetAccountsOutput>;
   getTransactions(input: GetTransactionsInput): Promise<GetTransactionsOutput>;
-  getFinancialState(): Promise<GetFinancialStateOutput>;
+  getState(input: GetStateInput): Promise<GetStateOutput>;
   verifyKey(): Promise<VerifyKeyOutput>;
 }
 
 export interface WarmApiAccount {
+  account_id?: string | null;
   name?: string | null;
   type?: string | null;
   subtype?: string | null;
   current_balance?: number | null;
+  available_balance?: number | null;
   institution_name?: string | null;
   mask?: string | null;
 }
@@ -55,6 +55,7 @@ export interface WarmApiAccountsResponse {
 
 export interface WarmApiTransaction {
   id?: string | null;
+  account_id?: string | null;
   date?: string | null;
   amount?: number | null;
   merchant_name?: string | null;

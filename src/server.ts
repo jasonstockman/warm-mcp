@@ -1,5 +1,5 @@
 /**
- * Warm MCP stdio entrypoint and compatibility exports.
+ * Warm MCP stdio entrypoint and shared exports.
  *
  * The typed MCP contract and Warm API helpers live in `warm-server.ts`.
  */
