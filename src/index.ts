@@ -23,7 +23,7 @@ function printUsage(): void {
   console.log('');
   console.log('  warm-mcp [install] [--force] [--no-validate]');
   console.log('  warm-mcp stdio');
-  console.log('  warm-mcp http [--host 0.0.0.0] [--port 3000] [--path /mcp]');
+  console.log('  warm-mcp http [--host 127.0.0.1] [--port 3000] [--path /mcp]');
   console.log('                 [--allowed-hosts host1,host2]');
   console.log('');
   console.log('  Aliases:');
@@ -47,7 +47,11 @@ function parseList(value: string): string[] {
     .filter(Boolean);
 }
 
-function readOption(args: string[], index: number, flag: string): { nextIndex: number; value: string } {
+function readOption(
+  args: string[],
+  index: number,
+  flag: string
+): { nextIndex: number; value: string } {
   const arg = args[index];
   if (arg.startsWith(`${flag}=`)) {
     return {

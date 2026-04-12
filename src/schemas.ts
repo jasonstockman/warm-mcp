@@ -1,20 +1,12 @@
 import * as z from 'zod/v4';
 
-const dateSchema = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected date in YYYY-MM-DD format.');
+const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected date in YYYY-MM-DD format.');
 
 const dateTimeSchema = z.string().datetime({ offset: true });
 
 export const emptyInputSchema = z.object({}).strict().default({});
 
-export const accountTypeSchema = z.enum([
-  'depository',
-  'credit',
-  'loan',
-  'investment',
-  'other',
-]);
+export const accountTypeSchema = z.enum(['depository', 'credit', 'loan', 'investment', 'other']);
 
 export const accountSchema = z
   .object({
@@ -52,6 +44,14 @@ const getTransactionsInputObjectSchema = z
       .optional()
       .describe(
         'Incremental sync checkpoint from a prior get_transactions response. Cannot be combined with cursor.'
+      ),
+    search: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        'Optional merchant or description search string. Keep it unchanged while following a cursor chain.'
       ),
   })
   .strict()

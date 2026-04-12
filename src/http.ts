@@ -22,7 +22,7 @@ type HttpResponse = ServerResponse & {
   status: (code: number) => HttpResponse;
 };
 
-const DEFAULT_HTTP_HOST = '0.0.0.0';
+const DEFAULT_HTTP_HOST = '127.0.0.1';
 const DEFAULT_HTTP_PORT = 3000;
 const DEFAULT_HTTP_PATH = '/mcp';
 
@@ -90,9 +90,7 @@ export function resolveHttpServerOptions(
   };
 }
 
-export async function startHttpServer(
-  options: WarmHttpServerOptions = {}
-): Promise<HttpServer> {
+export async function startHttpServer(options: WarmHttpServerOptions = {}): Promise<HttpServer> {
   const resolved = resolveHttpServerOptions(options);
   const app = createMcpExpressApp({
     host: resolved.host,

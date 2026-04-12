@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'path';
 import { homedir, platform } from 'os';
 
 import { verifyWarmApiKey } from './server.js';
+import { getWarmApiKeyPath } from './config-paths.js';
 
 const HOME = homedir();
 const CWD = process.cwd();
@@ -55,7 +56,11 @@ const GLOBAL_CLIENTS: Client[] = [
     configPath: join(HOME, '.codeium', 'windsurf', 'mcp_config.json'),
     format: 'json',
   },
-  { name: 'OpenCode', configPath: join(HOME, '.config', 'opencode', 'opencode.json'), format: 'json' },
+  {
+    name: 'OpenCode',
+    configPath: join(HOME, '.config', 'opencode', 'opencode.json'),
+    format: 'json',
+  },
   { name: 'Codex CLI', configPath: join(HOME, '.codex', 'config.toml'), format: 'toml' },
   {
     name: 'Antigravity',
@@ -71,6 +76,8 @@ const MCP_CONFIG =
   platform() === 'win32'
     ? { command: 'cmd', args: ['/c', 'npx', '-y', '@warmio/mcp', '--server'] }
     : { command: 'npx', args: ['-y', '@warmio/mcp', '--server'] };
+
+const WARM_API_KEY_PATH = getWarmApiKeyPath();
 
 function detectProjectClients(): Client[] {
   const found: Client[] = [];
@@ -112,7 +119,7 @@ function isConfigured(client: Client): boolean {
   }
 }
 
-function configureJson(client: Client, apiKey: string): void {
+function configureJson(client: Client): void {
   let config: Record<string, unknown> = {};
   if (existsSync(client.configPath)) {
     try {
@@ -129,17 +136,20 @@ function configureJson(client: Client, apiKey: string): void {
   const servers = config.mcpServers as Record<string, unknown>;
   const existing = isRecord(servers.warm) ? servers.warm : undefined;
   const existingEnv = isRecord(existing?.env) ? existing.env : {};
+  const nextEnv = { ...existingEnv } as Record<string, unknown>;
+
+  delete nextEnv.WARM_API_KEY;
 
   if (client.isProjectLevel && existing?.command) {
     servers.warm = {
       ...existing,
-      env: { ...existingEnv, WARM_API_KEY: apiKey },
+      ...(Object.keys(nextEnv).length > 0 ? { env: nextEnv } : {}),
     };
   } else {
     servers.warm = {
       ...existing,
       ...MCP_CONFIG,
-      env: { ...existingEnv, WARM_API_KEY: apiKey },
+      ...(Object.keys(nextEnv).length > 0 ? { env: nextEnv } : {}),
     };
   }
 
@@ -147,7 +157,7 @@ function configureJson(client: Client, apiKey: string): void {
   writeFileSync(client.configPath, JSON.stringify(config, null, 2) + '\n');
 }
 
-function configureToml(client: Client, apiKey: string): void {
+function configureToml(client: Client): void {
   let content = '';
   if (existsSync(client.configPath)) {
     content = readFileSync(client.configPath, 'utf-8');
@@ -161,7 +171,7 @@ function configureToml(client: Client, apiKey: string): void {
     platform() === 'win32'
       ? '["/c", "npx", "-y", "@warmio/mcp", "--server"]'
       : '["-y", "@warmio/mcp", "--server"]';
-  const warmBlock = `[mcp_servers.warm]\ncommand = "${tomlCommand}"\nargs = ${tomlArgs}\n\n[mcp_servers.warm.env]\nWARM_API_KEY = "${apiKey}"\n`;
+  const warmBlock = `[mcp_servers.warm]\ncommand = "${tomlCommand}"\nargs = ${tomlArgs}\n`;
   const warmBlockPattern = /\n?\[mcp_servers\.warm\][\s\S]*?(?=\n\[[^\n]+\]|\s*$)/g;
 
   let nextContent = content.replace(warmBlockPattern, '').trimEnd();
@@ -174,13 +184,13 @@ function configureToml(client: Client, apiKey: string): void {
   writeFileSync(client.configPath, nextContent.endsWith('\n') ? nextContent : `${nextContent}\n`);
 }
 
-function configure(client: Client, apiKey: string): void {
+function configure(client: Client): void {
   if (client.format === 'json') {
-    configureJson(client, apiKey);
+    configureJson(client);
     return;
   }
 
-  configureToml(client, apiKey);
+  configureToml(client);
 }
 
 function shortPath(filePath: string): string {
@@ -236,6 +246,11 @@ async function validateApiKey(apiKey: string): Promise<boolean> {
   }
 }
 
+function storeApiKey(apiKey: string): void {
+  mkdirSync(dirname(WARM_API_KEY_PATH), { recursive: true });
+  writeFileSync(WARM_API_KEY_PATH, `${apiKey}\n`, { mode: 0o600 });
+}
+
 export async function install(options: InstallOptions = {}): Promise<void> {
   const force = options.force ?? false;
   const shouldValidateApiKey = options.validateApiKey ?? true;
@@ -254,7 +269,9 @@ export async function install(options: InstallOptions = {}): Promise<void> {
   allClients.forEach((client) => {
     const configured = isConfigured(client);
     const status = configured && !force ? 'configured' : 'not configured';
-    console.log(`    ${client.name.padEnd(22)} ${shortPath(client.configPath).padEnd(55)} ${status}`);
+    console.log(
+      `    ${client.name.padEnd(22)} ${shortPath(client.configPath).padEnd(55)} ${status}`
+    );
   });
   console.log('');
 
@@ -280,12 +297,14 @@ export async function install(options: InstallOptions = {}): Promise<void> {
     }
   }
 
+  storeApiKey(apiKey);
+
   console.log('  Configuring...');
   console.log('');
 
   needsSetup.forEach((client) => {
     try {
-      configure(client, apiKey);
+      configure(client);
       console.log(`    ${client.name.padEnd(22)} done`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -294,6 +313,7 @@ export async function install(options: InstallOptions = {}): Promise<void> {
   });
 
   console.log('');
+  console.log(`  Stored API key at ${shortPath(WARM_API_KEY_PATH)}`);
   console.log('  All set! Restart your MCP clients and try:');
   console.log('    "What\'s my net worth?"');
   console.log('');
