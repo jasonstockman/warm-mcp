@@ -10,12 +10,10 @@ export const accountTypeSchema = z.enum(['depository', 'credit', 'loan', 'invest
 
 export const accountSchema = z
   .object({
-    account_id: z.string().nullable(),
     name: z.string(),
     type: accountTypeSchema,
     subtype: z.string().nullable(),
     balance: z.number().finite(),
-    available_balance: z.number().finite().nullable(),
     institution: z.string().nullable(),
     mask: z.string().nullable(),
   })
@@ -70,7 +68,6 @@ export const getTransactionsInputSchema = getTransactionsInputObjectSchema;
 export const transactionSchema = z
   .object({
     id: z.string().nullable(),
-    account_id: z.string().nullable(),
     date: dateSchema.nullable(),
     amount: z.number().finite(),
     merchant: z.string().nullable(),
@@ -204,23 +201,6 @@ export const getFinancialStateOutputSchema = z
   })
   .strict();
 
-export const getStateInputSchema = z
-  .object({
-    query: z
-      .string()
-      .min(1)
-      .describe(
-        'GraphQL-like selection string over accounts and financial_state. Example: { accounts { account_id name balance } financial_state { health { score label } recurring { merchant amount next_date } } }'
-      ),
-  })
-  .strict();
-
-export const getStateOutputSchema = z
-  .object({
-    data: z.record(z.string(), z.unknown()),
-  })
-  .strict();
-
 export const verifyKeyOutputSchema = z
   .object({
     valid: z.boolean(),
@@ -232,8 +212,6 @@ export type Account = z.infer<typeof accountSchema>;
 export type FinancialHealth = z.infer<typeof financialHealthSchema>;
 export type GetAccountsOutput = z.infer<typeof getAccountsOutputSchema>;
 export type GetFinancialStateOutput = z.infer<typeof getFinancialStateOutputSchema>;
-export type GetStateInput = z.infer<typeof getStateInputSchema>;
-export type GetStateOutput = z.infer<typeof getStateOutputSchema>;
 export type GetTransactionsInput = z.infer<typeof getTransactionsInputSchema>;
 export type GetTransactionsOutput = z.infer<typeof getTransactionsOutputSchema>;
 export type VerifyKeyOutput = z.infer<typeof verifyKeyOutputSchema>;
