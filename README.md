@@ -2,12 +2,7 @@
 
 Read-only MCP server for Warm financial data.
 
-Warm supports two transport shapes from this repo:
-
-- Local `stdio` via the npm package `@warmio/mcp`
-- Self-hosted Streamable HTTP via `warm-mcp http`
-
-Warm does not currently publish a Warm-hosted Streamable HTTP MCP endpoint from this repo.
+This package supports local `stdio` transport only.
 
 ## Install
 
@@ -44,22 +39,6 @@ stay secret-free:
 Optional auth overrides:
 
 - `WARM_API_KEY`
-- `WARM_API_KEY_FILE`
-
-## Self-hosted Streamable HTTP
-
-Run the HTTP server locally or behind your own reverse proxy:
-
-```bash
-npx @warmio/mcp http --host 127.0.0.1 --port 3000 --path /mcp
-```
-
-Environment overrides:
-
-- `WARM_MCP_HTTP_HOST`
-- `WARM_MCP_HTTP_PORT`
-- `WARM_MCP_HTTP_PATH`
-- `WARM_MCP_ALLOWED_HOSTS`
 - `WARM_API_KEY_FILE`
 
 On Windows, prefer:
@@ -292,7 +271,6 @@ Returns:
 ## Development
 
 ```bash
-cd mcp
 npm install
 npm run build
 ```
