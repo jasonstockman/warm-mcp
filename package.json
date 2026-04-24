@@ -1,6 +1,6 @@
 {
   "name": "@warmio/mcp",
-  "version": "4.3.1",
+  "version": "4.3.2",
   "description": "Warm MCP server for local stdio and Streamable HTTP access",
   "type": "module",
   "main": "dist/index.js",

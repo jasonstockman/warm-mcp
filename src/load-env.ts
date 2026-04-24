@@ -37,7 +37,7 @@ export function loadDotEnv(): void {
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) {
-      loadEnvFile({ path: candidate, override: false });
+      loadEnvFile({ path: candidate, override: false, quiet: true });
       return;
     }
   }

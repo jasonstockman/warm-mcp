@@ -16,7 +16,7 @@ being duplicated into every MCP client config.
 
 Use `@latest` when you want the newest published package. Bare `npx @warmio/mcp` can reuse a
 cached or local copy and leave you on an older version. If you want a deterministic install,
-replace `@latest` with an exact version such as `@warmio/mcp@4.3.1`.
+replace `@latest` with an exact version such as `@warmio/mcp@4.3.2`.
 
 When launched without arguments in a non-interactive context, the binary automatically starts the
 `stdio` server instead of the installer. This keeps MCP clients that invoke the package directly
