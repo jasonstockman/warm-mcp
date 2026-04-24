@@ -71,11 +71,12 @@ const GLOBAL_CLIENTS: Client[] = [
 ];
 
 const PROJECT_CONFIGS = ['.mcp.json', '.cursor/mcp.json', '.vscode/mcp.json'];
+const MCP_PACKAGE_SPEC = '@warmio/mcp@latest';
 
 const MCP_CONFIG =
   platform() === 'win32'
-    ? { command: 'cmd', args: ['/c', 'npx', '-y', '@warmio/mcp', '--server'] }
-    : { command: 'npx', args: ['-y', '@warmio/mcp', '--server'] };
+    ? { command: 'cmd', args: ['/c', 'npx', '-y', MCP_PACKAGE_SPEC, '--server'] }
+    : { command: 'npx', args: ['-y', MCP_PACKAGE_SPEC, '--server'] };
 
 const WARM_API_KEY_PATH = getWarmApiKeyPath();
 
@@ -169,8 +170,8 @@ function configureToml(client: Client): void {
   const tomlCommand = platform() === 'win32' ? 'cmd' : 'npx';
   const tomlArgs =
     platform() === 'win32'
-      ? '["/c", "npx", "-y", "@warmio/mcp", "--server"]'
-      : '["-y", "@warmio/mcp", "--server"]';
+      ? `["/c", "npx", "-y", "${MCP_PACKAGE_SPEC}", "--server"]`
+      : `["-y", "${MCP_PACKAGE_SPEC}", "--server"]`;
   const warmBlock = `[mcp_servers.warm]\ncommand = "${tomlCommand}"\nargs = ${tomlArgs}\n`;
   const warmBlockPattern = /\n?\[mcp_servers\.warm\][\s\S]*?(?=\n\[[^\n]+\]|\s*$)/g;
 

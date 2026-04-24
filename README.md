@@ -2,17 +2,25 @@
 
 Read-only MCP server for Warm financial data.
 
-This package supports local `stdio` transport only.
+This package starts in local `stdio` mode by default and also supports optional Streamable HTTP.
 
 ## Install
 
 ```bash
-npx @warmio/mcp
+npx -y @warmio/mcp@latest
 ```
 
 The installer detects supported MCP clients, prompts for your Warm API key, and writes the local
 `stdio` server config automatically. The key is stored once in your local Warm profile instead of
 being duplicated into every MCP client config.
+
+Use `@latest` when you want the newest published package. Bare `npx @warmio/mcp` can reuse a
+cached or local copy and leave you on an older version. If you want a deterministic install,
+replace `@latest` with an exact version such as `@warmio/mcp@4.3.1`.
+
+When launched without arguments in a non-interactive context, the binary automatically starts the
+`stdio` server instead of the installer. This keeps MCP clients that invoke the package directly
+from falling into the interactive setup flow.
 
 ## Requirements
 
@@ -30,11 +38,14 @@ stay secret-free:
   "mcpServers": {
     "warm": {
       "command": "npx",
-      "args": ["-y", "@warmio/mcp", "--server"]
+      "args": ["-y", "@warmio/mcp@latest", "--server"]
     }
   }
 }
 ```
+
+If you already have a client config that uses bare `@warmio/mcp`, update it to `@warmio/mcp@latest`
+or an exact version and restart the client.
 
 Optional auth overrides:
 
@@ -48,11 +59,26 @@ On Windows, prefer:
   "mcpServers": {
     "warm": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "@warmio/mcp", "--server"]
+      "args": ["/c", "npx", "-y", "@warmio/mcp@latest", "--server"]
     }
   }
 }
 ```
+
+## Optional Streamable HTTP
+
+If your MCP client supports Streamable HTTP, you can run:
+
+```bash
+npx -y @warmio/mcp@latest http --host 127.0.0.1 --port 3000 --path /mcp
+```
+
+Relevant optional environment variables:
+
+- `WARM_MCP_HTTP_HOST`
+- `WARM_MCP_HTTP_PORT`
+- `WARM_MCP_HTTP_PATH`
+- `WARM_MCP_ALLOWED_HOSTS`
 
 ## Core Tools
 
