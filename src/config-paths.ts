@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -27,4 +28,12 @@ export function getWarmApiKeyPath(): string {
   }
 
   return path.join(getWarmConfigDir(), 'api_key');
+}
+
+export function readConfigFile(configPath: string): string | null {
+  try {
+    return fs.readFileSync(configPath, 'utf-8').trim() || null;
+  } catch {
+    return null;
+  }
 }
