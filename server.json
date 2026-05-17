@@ -3,12 +3,12 @@
   "name": "io.github.jasonstockman/warm-mcp",
   "title": "Warm",
   "description": "Read-only MCP server for Warm financial data via local stdio transport, with optional Streamable HTTP mode.",
-  "version": "4.3.2",
+  "version": "4.3.3",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@warmio/mcp",
-      "version": "4.3.2",
+      "version": "4.3.3",
       "transport": {
         "type": "stdio"
       },
