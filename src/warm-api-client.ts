@@ -202,6 +202,11 @@ interface WarmApiSnapshot {
   net_worth?: number | null;
   period_end?: string | null;
   snapshot_date?: string | null;
+  spending_by_category?: Array<{
+    amount?: number | null;
+    category?: string | null;
+    total?: number | null;
+  }> | null;
   total_assets?: number | null;
   total_liabilities?: number | null;
 }
@@ -289,14 +294,6 @@ interface WarmApiHoldingsResponse {
   holdings?: WarmApiHolding[];
 }
 
-interface WarmApiSpendingResponse {
-  generated_at?: string;
-  spending?: Array<{
-    category?: string | null;
-    total?: number | null;
-  }>;
-}
-
 interface WarmApiVerifyResponse {
   status?: string;
   valid?: boolean;
@@ -307,8 +304,6 @@ const DEFAULT_REQUEST_TIMEOUT_MS = (() => {
   const raw = Number(process.env.WARM_API_TIMEOUT_MS || 10_000);
   return Number.isFinite(raw) && raw > 0 ? raw : 10_000;
 })();
-const DEFAULT_SPENDING_MONTHS = 6;
-
 let cachedApiKey: string | null | undefined;
 
 function roundMoney(value: number): number {
@@ -369,7 +364,6 @@ function normalizeAccounts(accounts: WarmApiAccount[]): GetAccountsOutput {
 
 function normalizeFinancialState(input: {
   budgets?: WarmApiBudget[];
-  categorySpending?: WarmApiSpendingResponse['spending'];
   generatedAt: string;
   goals?: WarmApiGoal[];
   health?: WarmApiHealth;
@@ -378,6 +372,9 @@ function normalizeFinancialState(input: {
   recurring?: WarmApiRecurring[];
   snapshots?: WarmApiSnapshot[];
 }): WarmFinancialState {
+  const latestSnapshot = input.snapshots?.[0];
+  const categorySpending = latestSnapshot?.spending_by_category ?? [];
+
   return {
     budgets: (input.budgets || []).map((budget) => ({
       amount: budget.amount ?? 0,
@@ -388,8 +385,8 @@ function normalizeFinancialState(input: {
       spent: budget.spent ?? 0,
       status: budget.status ?? null,
     })),
-    category_spending: (input.categorySpending || []).map((item) => ({
-      amount: roundMoney(item?.total ?? 0),
+    category_spending: categorySpending.map((item) => ({
+      amount: roundMoney(item?.amount ?? item?.total ?? 0),
       category: item?.category || 'Uncategorized',
     })),
     generated_at: input.generatedAt,
@@ -500,7 +497,7 @@ export async function apiRequest<TResponse>(
 
   if (!apiKey) {
     throw new Error(
-      'WARM_API_KEY not set. Run "npx -y @warmio/mcp@latest" to configure or set WARM_API_KEY.'
+      'WARM_API_KEY not set. Run "npx @warmio/mcp" to configure or set WARM_API_KEY.'
     );
   }
 
@@ -533,7 +530,7 @@ export async function apiRequest<TResponse>(
   if (!response.ok) {
     const errorMessages: Record<number, string> = {
       401: 'Invalid or expired API key. Regenerate at https://warm.io/settings',
-      403: 'Pro subscription required. Upgrade at https://warm.io/settings',
+      403: 'API access is available on paid plans only. Upgrade at https://warm.io/settings',
       429: 'Rate limit exceeded. Try again in a few minutes.',
     };
 
@@ -577,7 +574,6 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
       healthResponse,
       liabilitiesResponse,
       holdingsResponse,
-      spendingResponse,
     ] = await Promise.all([
       apiRequest<WarmApiSnapshotsResponse>('/api/export', { dataset: 'snapshots' }, options),
       apiRequest<WarmApiRecurringResponse>('/api/export', { dataset: 'recurring' }, options),
@@ -586,15 +582,9 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
       apiRequest<WarmApiHealthResponse>('/api/export', { dataset: 'health' }, options),
       apiRequest<WarmApiLiabilitiesResponse>('/api/export', { dataset: 'liabilities' }, options),
       apiRequest<WarmApiHoldingsResponse>('/api/export', { dataset: 'holdings' }, options),
-      apiRequest<WarmApiSpendingResponse>(
-        '/api/spending',
-        { months: String(DEFAULT_SPENDING_MONTHS) },
-        options
-      ),
     ]);
 
     const generatedAt =
-      spendingResponse.generated_at ||
       holdingsResponse.generated_at ||
       liabilitiesResponse.generated_at ||
       healthResponse.generated_at ||
@@ -606,7 +596,6 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
 
     return normalizeFinancialState({
       budgets: budgetsResponse.budgets,
-      categorySpending: spendingResponse.spending,
       generatedAt,
       goals: goalsResponse.goals,
       health: healthResponse,

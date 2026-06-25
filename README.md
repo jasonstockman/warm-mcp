@@ -1,8 +1,6 @@
-# Warm MCP
+# Warmio
 
-Read-only MCP server for Warm financial data.
-
-This package starts in local `stdio` mode by default and also supports optional Streamable HTTP.
+Warmio is the one-command CLI and read-only MCP server for Warm financial data.
 
 ## Install
 
@@ -10,17 +8,9 @@ This package starts in local `stdio` mode by default and also supports optional 
 npx -y @warmio/mcp@latest
 ```
 
-The installer detects supported MCP clients, prompts for your Warm API key, and writes the local
-`stdio` server config automatically. The key is stored once in your local Warm profile instead of
-being duplicated into every MCP client config.
-
-Use `@latest` when you want the newest published package. Bare `npx @warmio/mcp` can reuse a
-cached or local copy and leave you on an older version. If you want a deterministic install,
-replace `@latest` with an exact version such as `@warmio/mcp@4.3.3`.
-
-When launched without arguments in a non-interactive context, the binary automatically starts the
-`stdio` server instead of the installer. This keeps MCP clients that invoke the package directly
-from falling into the interactive setup flow.
+The installer detects supported MCP clients, prompts for your Warm API key, validates it, and
+writes the local `stdio` MCP config automatically. The key is stored once in your local Warm
+profile instead of being duplicated into every MCP client config.
 
 ## Requirements
 
@@ -28,29 +18,20 @@ from falling into the interactive setup flow.
 - A Warm API key from [Settings -> API Keys](https://warm.io/settings)
 - Node.js 18+
 
-## Manual `stdio` Config
+## Manual MCP Config
 
-The installer stores your API key in the Warm config directory and generated MCP client configs can
-stay secret-free:
+Use this when a client asks you to paste an MCP JSON config:
 
 ```json
 {
   "mcpServers": {
     "warm": {
       "command": "npx",
-      "args": ["-y", "@warmio/mcp@latest", "--server"]
+      "args": ["-y", "@warmio/mcp@latest", "mcp"]
     }
   }
 }
 ```
-
-If you already have a client config that uses bare `@warmio/mcp`, update it to `@warmio/mcp@latest`
-or an exact version and restart the client.
-
-Optional auth overrides:
-
-- `WARM_API_KEY`
-- `WARM_API_KEY_FILE`
 
 On Windows, prefer:
 
@@ -59,10 +40,43 @@ On Windows, prefer:
   "mcpServers": {
     "warm": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "@warmio/mcp@latest", "--server"]
+      "args": ["/c", "npx", "-y", "@warmio/mcp@latest", "mcp"]
     }
   }
 }
+```
+
+Optional auth overrides:
+
+- `WARM_API_KEY`
+- `WARM_API_KEY_FILE`
+
+## Universal copy/paste setup prompt
+
+```text
+I want to connect Warm to this AI app using MCP.
+
+Use this MCP server config:
+
+{
+  "mcpServers": {
+    "warm": {
+      "command": "npx",
+      "args": ["-y", "@warmio/mcp@latest", "mcp"]
+    }
+  }
+}
+
+If this app supports MCP configuration, add a server named "warm" with that command.
+
+Do not ask me to paste my Warm API key into this chat. Help me store it locally using Warm's setup
+flow, then test the connection by calling Warm's verify_key tool.
+
+After setup, I should be able to ask:
+- What’s my net worth?
+- Summarize my recent transactions.
+- What changed recently?
+- What recurring charges do I have?
 ```
 
 ## Optional Streamable HTTP

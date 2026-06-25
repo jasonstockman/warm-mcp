@@ -6,7 +6,7 @@ import { loadDotEnv } from './load-env.js';
 import { createWarmServer } from './server.js';
 import { AdaptiveStdioTransport } from './stdio.js';
 
-type Command = 'help' | 'http' | 'install' | 'stdio';
+type Command = 'help' | 'http' | 'install' | 'mcp';
 
 interface CliOptions {
   command: Command;
@@ -23,25 +23,21 @@ function isInteractiveSession(): boolean {
 
 function printUsage(): void {
   console.log('');
-  console.log('  Warm MCP');
-  console.log('  --------');
+  console.log('  Warmio');
+  console.log('  ------');
   console.log('');
-  console.log('  warm-mcp');
-  console.log('    Interactive terminal: runs installer');
-  console.log('    Non-interactive launch: starts stdio server');
+  console.log('  warmio');
+  console.log('    Run the interactive installer');
   console.log('');
-  console.log('  warm-mcp install [--force] [--no-validate]');
-  console.log('  warm-mcp stdio');
-  console.log('  warm-mcp http [--host 127.0.0.1] [--port 3000] [--path /mcp]');
-  console.log('');
-  console.log('  Aliases:');
-  console.log('    --server, --stdio    Start stdio mode');
+  console.log('  warmio install [--force] [--no-validate]');
+  console.log('  warmio mcp');
+  console.log('  warmio http [--host 127.0.0.1] [--port 3000] [--path /mcp]');
   console.log('');
 }
 
 function parseCliArgs(args: string[]): CliOptions {
   const options: CliOptions = {
-    command: isInteractiveSession() ? 'install' : 'stdio',
+    command: isInteractiveSession() ? 'install' : 'mcp',
     force: false,
     validateApiKey: true,
   };
@@ -59,8 +55,8 @@ function parseCliArgs(args: string[]): CliOptions {
       continue;
     }
 
-    if (arg === 'stdio' || arg === 'server' || arg === '--stdio' || arg === '--server') {
-      options.command = 'stdio';
+    if (arg === 'mcp') {
+      options.command = 'mcp';
       continue;
     }
 
@@ -128,7 +124,7 @@ async function main(): Promise<void> {
     case 'help':
       printUsage();
       return;
-    case 'stdio':
+    case 'mcp':
       await startStdioServer();
       return;
     case 'http':

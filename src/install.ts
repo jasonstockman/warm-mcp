@@ -22,7 +22,7 @@ interface Client {
   isProjectLevel?: boolean;
 }
 
-type ClientSetupState = 'configured' | 'missing' | 'needs_migration';
+type ClientSetupState = 'configured' | 'missing' | 'needs_setup';
 
 interface ClientStatus {
   client: Client;
@@ -84,8 +84,8 @@ const MCP_PACKAGE_SPEC = '@warmio/mcp@latest';
 
 const MCP_CONFIG =
   platform() === 'win32'
-    ? { command: 'cmd', args: ['/c', 'npx', '-y', MCP_PACKAGE_SPEC, '--server'] }
-    : { command: 'npx', args: ['-y', MCP_PACKAGE_SPEC, '--server'] };
+    ? { command: 'cmd', args: ['/c', 'npx', '-y', MCP_PACKAGE_SPEC, 'mcp'] }
+    : { command: 'npx', args: ['-y', MCP_PACKAGE_SPEC, 'mcp'] };
 
 const WARM_API_KEY_PATH = getWarmApiKeyPath();
 const WARM_TOML_BLOCK_PATTERN = /\n?\[mcp_servers\.warm\][\s\S]*?(?=\n\[[^\n]+\]|\s*$)/g;
@@ -127,32 +127,12 @@ function isWarmPackageSpecifier(value: string): boolean {
   return /^@warmio\/mcp(?:@.+)?$/.test(value);
 }
 
-function isLegacyWarmPackageSpecifier(value: string): boolean {
-  return /^@anthropic\/warm-mcp-server(?:@.+)?$/.test(value);
-}
-
-function normalizePathLikeValue(value: string): string {
-  return value.replace(/\\/g, '/').toLowerCase();
-}
-
-function isLocalWarmMcpPath(value: string): boolean {
-  const normalized = normalizePathLikeValue(value);
-  return normalized.includes('/warm-mcp/dist/index.js') || normalized.endsWith('/warm-mcp');
-}
-
 function isSupportedWarmInvocation(command: string | undefined, args: string[]): boolean {
-  return [command, ...args].some(
-    (value): value is string =>
-      typeof value === 'string' &&
-      (isWarmPackageSpecifier(value) || isLocalWarmMcpPath(value))
-  );
-}
+  if (command !== 'npx' && command !== 'cmd') {
+    return false;
+  }
 
-function isLegacyWarmInvocation(command: string | undefined, args: string[]): boolean {
-  return [command, ...args].some(
-    (value): value is string =>
-      typeof value === 'string' && isLegacyWarmPackageSpecifier(value)
-  );
+  return args.some((value) => isWarmPackageSpecifier(value)) && args.includes('mcp');
 }
 
 function getJsonEnvStatus(server: Record<string, unknown> | undefined): {
@@ -186,15 +166,11 @@ function getJsonStatus(client: Client, content: string): ClientStatus {
     const command = typeof server.command === 'string' ? server.command : undefined;
     const args = getStringArray(server.args);
 
-    if (client.isProjectLevel && command && !isLegacyWarmInvocation(command, args)) {
-      return { client, state: 'configured', ...envStatus };
-    }
-
     if (isSupportedWarmInvocation(command, args)) {
       return { client, state: 'configured', ...envStatus };
     }
 
-    return { client, state: 'needs_migration', ...envStatus };
+    return { client, state: 'needs_setup', ...envStatus };
   } catch {
     return { client, state: 'missing', hasApiKeyFileOverride: false, inlineApiKey: null };
   }
@@ -281,7 +257,7 @@ function getTomlStatus(client: Client, content: string): ClientStatus {
     return { client, state: 'configured', ...envStatus };
   }
 
-  return { client, state: 'needs_migration', ...envStatus };
+  return { client, state: 'needs_setup', ...envStatus };
 }
 
 function getClientStatus(client: Client): ClientStatus {
@@ -321,8 +297,7 @@ function configureJson(client: Client): void {
   const preserveProjectCommand =
     client.isProjectLevel &&
     !!existingCommand &&
-    !isLegacyWarmInvocation(existingCommand, existingArgs) &&
-    !isWarmPackageSpecifier(existingCommand);
+    isSupportedWarmInvocation(existingCommand, existingArgs);
 
   delete nextEnv.WARM_API_KEY;
 
@@ -355,8 +330,8 @@ function configureToml(client: Client): void {
   const tomlCommand = platform() === 'win32' ? 'cmd' : 'npx';
   const tomlArgs =
     platform() === 'win32'
-      ? `["/c", "npx", "-y", "${MCP_PACKAGE_SPEC}", "--server"]`
-      : `["-y", "${MCP_PACKAGE_SPEC}", "--server"]`;
+      ? `["/c", "npx", "-y", "${MCP_PACKAGE_SPEC}", "mcp"]`
+      : `["-y", "${MCP_PACKAGE_SPEC}", "mcp"]`;
   const warmBlock = `[mcp_servers.warm]\ncommand = "${tomlCommand}"\nargs = ${tomlArgs}\n`;
   const preservedEnvLines = getTomlEnvStatus(content).envLines.filter(
     (line) => !/^\s*WARM_API_KEY\s*=/.test(line)
@@ -453,8 +428,8 @@ function getStatusLabel(status: ClientSetupState, force: boolean): string {
     return 'configured';
   }
 
-  if (status === 'needs_migration') {
-    return 'needs migration';
+  if (status === 'needs_setup') {
+    return 'needs setup';
   }
 
   return 'not configured';
@@ -465,8 +440,8 @@ export async function install(options: InstallOptions = {}): Promise<void> {
   const shouldValidateApiKey = options.validateApiKey ?? true;
 
   console.log('');
-  console.log('  Warm MCP Server Installer');
-  console.log('  -------------------------');
+  console.log('  Warmio Installer');
+  console.log('  ----------------');
   console.log('');
 
   const globalClients = GLOBAL_CLIENTS.filter(isDetected);
