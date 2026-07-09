@@ -14,7 +14,7 @@ profile instead of being duplicated into every MCP client config.
 
 ## Requirements
 
-- Warm Pro
+- A paid Warm plan (Plus or Pro)
 - A Warm API key from [Settings -> API Keys](https://warm.io/settings)
 - Node.js 18+
 
