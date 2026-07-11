@@ -1,25 +1,32 @@
 export const WARM_TOOL_NAMES = [
-  'get_accounts',
+  'get_financial_context',
   'get_transactions',
-  'get_financial_state',
   'verify_key',
 ] as const;
 
 export type WarmToolName = (typeof WARM_TOOL_NAMES)[number];
 
 export type {
-  GetAccountsOutput,
+  Account,
+  Budget,
+  FinancialContext,
+  FinancialContextMeta,
   GetTransactionsInput,
   GetTransactionsOutput,
+  Goal,
+  Health,
+  Holding,
+  LatestTransactions,
+  Liability,
+  Position,
+  Recurring,
+  Snapshot,
+  Status,
+  Transaction,
+  TransactionIndex,
+  TransactionMonth,
   VerifyKeyOutput,
-  WarmApiAccount,
-  WarmApiBudget,
   WarmApiClient,
   WarmApiClientOptions,
-  WarmApiGoal,
-  WarmApiHolding,
-  WarmApiLiability,
-  WarmApiTransaction,
-  WarmFinancialState,
 } from './warm-api-client.js';
 export type { WarmServerOptions } from './server.js';
