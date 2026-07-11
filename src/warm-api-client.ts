@@ -1,7 +1,5 @@
 import { getWarmApiKeyPath, readConfigFile } from './config-paths.js';
 
-type NormalizedAccountType = 'depository' | 'credit' | 'loan' | 'investment' | 'other';
-
 export interface WarmApiClientOptions {
   apiKeyResolver?: () => string | null;
   apiUrl?: string;
@@ -9,165 +7,196 @@ export interface WarmApiClientOptions {
   requestTimeoutMs?: number;
 }
 
-export interface WarmApiAccount {
-  account_id?: string | null;
-  available_balance?: number | null;
-  current_balance?: number | null;
-  institution_name?: string | null;
-  mask?: string | null;
-  name?: string | null;
-  subtype?: string | null;
-  type?: string | null;
-}
-
-export interface WarmApiTransaction {
-  account_id?: string | null;
-  amount?: number | null;
-  date?: string | null;
-  detailed_category?: string | null;
-  id?: string | null;
-  merchant_name?: string | null;
-  name?: string | null;
-  primary_category?: string | null;
-}
-
-export interface WarmApiBudget {
-  amount?: number | null;
-  name?: string | null;
-  period?: string | null;
-  percent_used?: number | null;
-  remaining?: number | null;
-  spent?: number | null;
-  status?: string | null;
-}
-
-export interface WarmApiGoal {
-  category?: string | null;
-  current?: number | null;
-  monthly_contribution_needed?: number | null;
-  name?: string | null;
-  progress_percent?: number | null;
-  status?: string | null;
-  target?: number | null;
-  target_date?: string | null;
-}
-
-export interface WarmFinancialState extends Record<string, unknown> {
-  budgets: Array<{
-    amount: number;
-    name: string;
-    percent_used: number;
-    period: string;
-    remaining: number;
-    spent: number;
-    status: string | null;
-  }>;
-  category_spending: Array<{
-    amount: number;
-    category: string;
-  }>;
-  generated_at: string;
-  goals: Array<{
-    category: string | null;
-    current: number;
-    monthly_contribution_needed: number | null;
-    name: string;
-    progress_percent: number;
-    status: string | null;
-    target: number;
-    target_date: string | null;
-  }>;
-  health: {
-    data_completeness: number | null;
-    label: string | null;
-    message: string | null;
-    pillars: {
-      borrow: number | null;
-      build: number | null;
-      save: number | null;
-      spend: number | null;
-    } | null;
-    score: number | null;
-  };
-  holdings: Array<{
-    account_id: string;
-    cost_basis: number | null;
-    quantity: number;
-    security_name: string | null;
-    symbol: string | null;
-    type: string | null;
-    value: number | null;
-  }>;
-  liabilities: Array<{
-    account_id: string;
-    apr_percentage: number | null;
-    balance: number | null;
-    is_overdue: boolean | null;
-    minimum_payment: number | null;
-    next_payment_due_date: string | null;
-    type: string;
-  }>;
-  recurring: Array<{
-    active: boolean;
-    amount: number;
-    frequency: string;
-    merchant: string;
-    next_date: string | null;
-    type: string | null;
-  }>;
-  snapshots: Array<{
-    date: string;
-    net_worth: number;
-    total_assets: number;
-    total_liabilities: number;
+export interface TransactionIndex {
+  total: number;
+  months: Array<{
+    month: string;
+    count: number;
   }>;
 }
 
-interface StateAccount {
-  available_balance: number | null;
-  balance: number;
+export interface Position {
+  date: string | null;
+  net_worth: number | null;
+  cash: number | null;
+  debt: number | null;
+  investments: number | null;
+  other_assets: number | null;
+  total_assets: number | null;
+}
+
+export interface Account {
+  id: string;
+  name: string;
+  type: 'depository' | 'credit' | 'loan' | 'investment' | 'brokerage' | 'other';
+  subtype: string | null;
+  group: 'cash' | 'debt' | 'investments' | null;
   institution: string | null;
   mask: string | null;
+  balance: number | null;
+  available: number | null;
+  currency: string | null;
+  updated_at: string | null;
+}
+
+export interface Status {
+  position: Position | null;
+  accounts: Account[];
+}
+
+export interface Recurring {
+  id: string;
+  account_id: string | null;
+  direction: 'inflow' | 'outflow' | null;
+  frequency:
+    | 'WEEKLY'
+    | 'BIWEEKLY'
+    | 'MONTHLY'
+    | 'QUARTERLY'
+    | 'SEMI_ANNUALLY'
+    | 'ANNUALLY'
+    | null;
+  status: 'active' | 'inactive' | 'dismissed' | null;
+  merchant: string | null;
+  amount: number | null;
+  next_date: string | null;
+}
+
+export interface Budget {
+  id: string;
   name: string;
-  subtype: string | null;
-  type: NormalizedAccountType;
+  type: 'category' | 'merchant';
+  period: 'weekly' | 'biweekly' | 'monthly';
+  status: 'under' | 'warning' | 'over';
+  amount: number;
+  spent: number;
+  remaining: number;
+  used_percent: number;
 }
 
-export interface GetTransactionsInput {
-  cursor?: string;
-  last_knowledge?: string;
-  limit: number;
-  search?: string;
+export interface Goal {
+  id: string;
+  name: string;
+  category: string;
+  status: 'not_started' | 'in_progress' | 'on_track' | 'behind' | 'completed';
+  target: number;
+  current: number;
+  progress_percent: number;
+  target_date: string | null;
 }
 
-export interface GetTransactionsOutput extends Record<string, unknown> {
-  generated_at: string | null;
-  next_knowledge: string | null;
-  pagination: {
-    has_more: boolean;
-    limit: number;
-    next_cursor: string | null;
+export interface Snapshot {
+  date: string;
+  net_worth: number | null;
+  cash: number | null;
+  debt: number | null;
+  income: number | null;
+  expenses: number | null;
+  cash_flow: number | null;
+  savings_rate: number | null;
+  investments: number | null;
+  assets: number | null;
+  health_score: number | null;
+}
+
+export interface Liability {
+  account_id: string | null;
+  type: 'credit' | 'student' | 'mortgage' | 'other' | null;
+  balance: number | null;
+  minimum_payment: number | null;
+  due_date: string | null;
+  interest_rate: number | null;
+  rate_type: 'fixed' | 'variable' | null;
+  overdue: boolean | null;
+}
+
+export interface Holding {
+  account_id: string | null;
+  symbol: string | null;
+  name: string | null;
+  type: 'cash' | 'derivative' | 'equity' | 'etf' | 'fixed_income' | 'mutual_fund' | 'other' | null;
+  quantity: number | null;
+  value: number | null;
+  cost_basis: number | null;
+}
+
+export interface Health {
+  score: number;
+  label: 'Needs Attention' | 'Good' | 'Strong';
+  level: 'critical' | 'poor' | 'fair' | 'good' | 'strong';
+  summary: string;
+  data_completeness: number;
+  pillars: {
+    spend: number | null;
+    save: number | null;
+    borrow: number | null;
+    build: number | null;
+  } | null;
+}
+
+export interface FinancialContext extends Record<string, unknown> {
+  version: 'v1';
+  updated_at: string;
+  currency: 'USD';
+  status: Status;
+  transactions: TransactionIndex;
+  recurring: Recurring[];
+  budgets: Budget[];
+  goals: Goal[];
+  snapshots: Snapshot[];
+  liabilities: Liability[];
+  holdings: Holding[];
+  health: Health | null;
+}
+
+export interface Transaction {
+  id: string;
+  account_id: string | null;
+  date: string | null;
+  amount: number;
+  merchant: string | null;
+  name: string | null;
+  category: string | null;
+  subcategory: string | null;
+  pending: boolean | null;
+  currency: string | null;
+}
+
+export interface TransactionMonth extends Record<string, unknown> {
+  month: string;
+  start_date: string;
+  end_date: string;
+  count: number;
+  items: Transaction[];
+}
+
+export interface LatestTransactions extends Record<string, unknown> {
+  since: string;
+  window_days: 10;
+  count: number;
+  items: Transaction[];
+}
+
+export type GetTransactionsInput =
+  | { month: string; latest?: never }
+  | { latest: true; month?: never };
+
+export type GetTransactionsOutput = TransactionMonth | LatestTransactions;
+
+export interface FinancialContextMeta extends Record<string, unknown> {
+  version: 'v1';
+  user_id: string;
+  context_id: string;
+  generated_at: string;
+  updated_at: string;
+  content_hash: string;
+  byte_length: number;
+  counts: {
+    accounts: number;
+    transaction_months: number;
+    transactions: number;
+    snapshots: number;
   };
-  txns: Array<{
-    amount: number;
-    category: string | null;
-    date: string | null;
-    description: string | null;
-    detailed_category: string | null;
-    id: string | null;
-    merchant: string | null;
-  }>;
-}
-
-export interface GetAccountsOutput extends Record<string, unknown> {
-  accounts: Array<{
-    balance: number;
-    institution: string | null;
-    mask: string | null;
-    name: string;
-    subtype: string | null;
-    type: NormalizedAccountType;
-  }>;
 }
 
 export interface VerifyKeyOutput extends Record<string, unknown> {
@@ -176,122 +205,10 @@ export interface VerifyKeyOutput extends Record<string, unknown> {
 }
 
 export interface WarmApiClient {
-  getAccounts(): Promise<GetAccountsOutput>;
-  getFinancialState(): Promise<WarmFinancialState>;
+  getFinancialContext(): Promise<FinancialContext>;
+  getFinancialContextMeta(): Promise<FinancialContextMeta>;
   getTransactions(input: GetTransactionsInput): Promise<GetTransactionsOutput>;
   verifyKey(): Promise<VerifyKeyOutput>;
-}
-
-interface WarmApiAccountsResponse {
-  accounts?: WarmApiAccount[];
-  generated_at?: string;
-}
-
-interface WarmApiTransactionsResponse {
-  generated_at?: string;
-  next_knowledge?: string;
-  pagination?: {
-    limit?: number | null;
-    next_cursor?: string | null;
-  };
-  transactions?: WarmApiTransaction[];
-}
-
-interface WarmApiSnapshot {
-  date?: string | null;
-  net_worth?: number | null;
-  period_end?: string | null;
-  snapshot_date?: string | null;
-  spending_by_category?: Array<{
-    amount?: number | null;
-    category?: string | null;
-    total?: number | null;
-  }> | null;
-  total_assets?: number | null;
-  total_liabilities?: number | null;
-}
-
-interface WarmApiRecurring {
-  active?: boolean | null;
-  amount?: number | null;
-  average_amount?: number | null;
-  description?: string | null;
-  frequency?: string | null;
-  is_active?: boolean | null;
-  last_amount?: number | null;
-  merchant?: string | null;
-  merchant_name?: string | null;
-  next_date?: string | null;
-  stream_type?: string | null;
-  type?: string | null;
-}
-
-interface WarmApiHealth {
-  data_completeness?: number | null;
-  label?: string | null;
-  message?: string | null;
-  pillars?: {
-    borrow?: number | null;
-    build?: number | null;
-    save?: number | null;
-    spend?: number | null;
-  } | null;
-  score?: number | null;
-}
-
-interface WarmApiSnapshotsResponse {
-  generated_at?: string;
-  snapshots?: WarmApiSnapshot[];
-}
-
-interface WarmApiRecurringResponse {
-  generated_at?: string;
-  recurring_transactions?: WarmApiRecurring[];
-  recurring?: WarmApiRecurring[];
-}
-
-interface WarmApiBudgetsResponse {
-  budgets?: WarmApiBudget[];
-  generated_at?: string;
-}
-
-interface WarmApiGoalsResponse {
-  generated_at?: string;
-  goals?: WarmApiGoal[];
-}
-
-interface WarmApiHealthResponse extends WarmApiHealth {
-  generated_at?: string;
-}
-
-export interface WarmApiLiability {
-  account_id?: string | null;
-  apr_percentage?: number | null;
-  balance?: number | null;
-  is_overdue?: boolean | null;
-  minimum_payment?: number | null;
-  next_payment_due_date?: string | null;
-  type?: string | null;
-}
-
-interface WarmApiLiabilitiesResponse {
-  generated_at?: string;
-  liabilities?: WarmApiLiability[];
-}
-
-export interface WarmApiHolding {
-  account_id?: string | null;
-  cost_basis?: number | null;
-  quantity?: number | null;
-  security_name?: string | null;
-  symbol?: string | null;
-  type?: string | null;
-  value?: number | null;
-}
-
-interface WarmApiHoldingsResponse {
-  generated_at?: string;
-  holdings?: WarmApiHolding[];
 }
 
 interface WarmApiVerifyResponse {
@@ -306,10 +223,6 @@ const DEFAULT_REQUEST_TIMEOUT_MS = (() => {
 })();
 let cachedApiKey: string | null | undefined;
 
-function roundMoney(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
 function getRequestSignal(timeoutMs: number): AbortSignal {
   if (typeof AbortSignal.timeout === 'function') {
     return AbortSignal.timeout(timeoutMs);
@@ -319,145 +232,6 @@ function getRequestSignal(timeoutMs: number): AbortSignal {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref?.();
   return controller.signal;
-}
-
-function normalizeAccountType(rawType: string | null | undefined): NormalizedAccountType {
-  switch (rawType) {
-    case 'depository':
-    case 'credit':
-    case 'loan':
-    case 'investment':
-      return rawType;
-    default:
-      return 'other';
-  }
-}
-
-function normalizeStateAccount(account: WarmApiAccount): StateAccount {
-  return {
-    available_balance:
-      account.available_balance == null ? null : roundMoney(account.available_balance),
-    balance: roundMoney(account.current_balance ?? 0),
-    institution: account.institution_name ?? null,
-    mask: account.mask ?? null,
-    name: account.name || 'Unknown Account',
-    subtype: account.subtype ?? null,
-    type: normalizeAccountType(account.type),
-  };
-}
-
-function normalizeAccounts(accounts: WarmApiAccount[]): GetAccountsOutput {
-  return {
-    accounts: accounts.map((account) => {
-      const normalized = normalizeStateAccount(account);
-      return {
-        balance: normalized.balance,
-        institution: normalized.institution,
-        mask: normalized.mask,
-        name: normalized.name,
-        subtype: normalized.subtype,
-        type: normalized.type,
-      };
-    }),
-  };
-}
-
-function normalizeFinancialState(input: {
-  budgets?: WarmApiBudget[];
-  generatedAt: string;
-  goals?: WarmApiGoal[];
-  health?: WarmApiHealth;
-  holdings?: WarmApiHolding[];
-  liabilities?: WarmApiLiability[];
-  recurring?: WarmApiRecurring[];
-  snapshots?: WarmApiSnapshot[];
-}): WarmFinancialState {
-  const latestSnapshot = input.snapshots?.[0];
-  const categorySpending = latestSnapshot?.spending_by_category ?? [];
-
-  return {
-    budgets: (input.budgets || []).map((budget) => ({
-      amount: budget.amount ?? 0,
-      name: budget.name || '',
-      percent_used: budget.percent_used ?? 0,
-      period: budget.period || '',
-      remaining: budget.remaining ?? 0,
-      spent: budget.spent ?? 0,
-      status: budget.status ?? null,
-    })),
-    category_spending: categorySpending.map((item) => ({
-      amount: roundMoney(item?.amount ?? item?.total ?? 0),
-      category: item?.category || 'Uncategorized',
-    })),
-    generated_at: input.generatedAt,
-    goals: (input.goals || []).map((goal) => ({
-      category: goal.category ?? null,
-      current: goal.current ?? 0,
-      monthly_contribution_needed: goal.monthly_contribution_needed ?? null,
-      name: goal.name || '',
-      progress_percent: goal.progress_percent ?? 0,
-      status: goal.status ?? null,
-      target: goal.target ?? 0,
-      target_date: goal.target_date ?? null,
-    })),
-    health: {
-      data_completeness: input.health?.data_completeness ?? null,
-      label: input.health?.label ?? null,
-      message: input.health?.message ?? null,
-      pillars: input.health?.pillars
-        ? {
-            borrow: input.health.pillars.borrow ?? null,
-            build: input.health.pillars.build ?? null,
-            save: input.health.pillars.save ?? null,
-            spend: input.health.pillars.spend ?? null,
-          }
-        : null,
-      score: input.health?.score ?? null,
-    },
-    holdings: (input.holdings || []).map((holding) => ({
-      account_id: holding.account_id || '',
-      cost_basis: holding.cost_basis ?? null,
-      quantity: roundMoney(holding.quantity ?? 0),
-      security_name: holding.security_name ?? null,
-      symbol: holding.symbol ?? null,
-      type: holding.type ?? null,
-      value: holding.value == null ? null : roundMoney(holding.value),
-    })),
-    liabilities: (input.liabilities || []).map((liability) => ({
-      account_id: liability.account_id || '',
-      apr_percentage: liability.apr_percentage ?? null,
-      balance: liability.balance == null ? null : roundMoney(liability.balance),
-      is_overdue: liability.is_overdue ?? null,
-      minimum_payment:
-        liability.minimum_payment == null ? null : roundMoney(liability.minimum_payment),
-      next_payment_due_date: liability.next_payment_due_date ?? null,
-      type: liability.type || 'unknown',
-    })),
-    recurring: (input.recurring || []).map((stream) => ({
-      active: stream.active === true || stream.is_active === true,
-      amount: roundMoney(stream.amount ?? stream.last_amount ?? stream.average_amount ?? 0),
-      frequency: stream.frequency || '',
-      merchant: stream.merchant || stream.merchant_name || stream.description || '',
-      next_date: stream.next_date ?? null,
-      type: stream.type ?? stream.stream_type ?? null,
-    })),
-    snapshots: (input.snapshots || [])
-      .map((snapshot) => ({
-        date: snapshot.date || snapshot.snapshot_date || snapshot.period_end || null,
-        net_worth: snapshot.net_worth ?? 0,
-        total_assets: snapshot.total_assets ?? 0,
-        total_liabilities: snapshot.total_liabilities ?? 0,
-      }))
-      .filter((snapshot): snapshot is { date: string; net_worth: number; total_assets: number; total_liabilities: number } =>
-        typeof snapshot.date === 'string'
-      )
-      .map((snapshot) => ({
-        date: snapshot.date,
-        net_worth: roundMoney(snapshot.net_worth),
-        total_assets: roundMoney(snapshot.total_assets),
-        total_liabilities: roundMoney(snapshot.total_liabilities),
-      })),
-  };
 }
 
 function createWarmApiClientConfig(options: WarmApiClientOptions) {
@@ -555,89 +329,37 @@ export async function apiRequest<TResponse>(
 }
 
 export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApiClient {
-  const getAccounts = async (): Promise<GetAccountsOutput> => {
-    const response = await apiRequest<WarmApiAccountsResponse>(
-      '/api/export',
-      { dataset: 'accounts' },
-      options
+  const getFinancialContext = async (): Promise<FinancialContext> =>
+    await apiRequest<FinancialContext>('/api/financial-context', {}, options);
+
+  const getFinancialContextMeta = async (): Promise<FinancialContextMeta> =>
+    await apiRequest<FinancialContextMeta>('/api/financial-context/meta', {}, options);
+
+  const getTransactions = async (
+    input: GetTransactionsInput
+  ): Promise<GetTransactionsOutput> => {
+    const rawInput = input as { latest?: unknown; month?: unknown };
+    if (typeof rawInput.month === 'string' && rawInput.latest !== undefined) {
+      throw new Error('`month` and `latest` are mutually exclusive.');
+    }
+    if (typeof rawInput.month === 'string') {
+      return await apiRequest<GetTransactionsOutput>(
+        '/api/financial-context/transactions',
+        { month: rawInput.month, latest: undefined },
+        options
+      );
+    }
+    if (rawInput.latest === true) {
+      return await apiRequest<GetTransactionsOutput>(
+        '/api/financial-context/transactions',
+        { month: undefined, latest: '1' },
+        options
+      );
+    }
+
+    throw new Error(
+      'Call getTransactions with `month` in YYYY-MM format or `latest: true`.'
     );
-
-    return normalizeAccounts(response.accounts || []);
-  };
-
-  const getFinancialState = async (): Promise<WarmFinancialState> => {
-    const [
-      snapshotsResponse,
-      recurringResponse,
-      budgetsResponse,
-      goalsResponse,
-      healthResponse,
-      liabilitiesResponse,
-      holdingsResponse,
-    ] = await Promise.all([
-      apiRequest<WarmApiSnapshotsResponse>('/api/export', { dataset: 'snapshots' }, options),
-      apiRequest<WarmApiRecurringResponse>('/api/export', { dataset: 'recurring' }, options),
-      apiRequest<WarmApiBudgetsResponse>('/api/export', { dataset: 'budgets' }, options),
-      apiRequest<WarmApiGoalsResponse>('/api/export', { dataset: 'goals' }, options),
-      apiRequest<WarmApiHealthResponse>('/api/export', { dataset: 'health' }, options),
-      apiRequest<WarmApiLiabilitiesResponse>('/api/export', { dataset: 'liabilities' }, options),
-      apiRequest<WarmApiHoldingsResponse>('/api/export', { dataset: 'holdings' }, options),
-    ]);
-
-    const generatedAt =
-      holdingsResponse.generated_at ||
-      liabilitiesResponse.generated_at ||
-      healthResponse.generated_at ||
-      goalsResponse.generated_at ||
-      budgetsResponse.generated_at ||
-      recurringResponse.generated_at ||
-      snapshotsResponse.generated_at ||
-      new Date().toISOString();
-
-    return normalizeFinancialState({
-      budgets: budgetsResponse.budgets,
-      generatedAt,
-      goals: goalsResponse.goals,
-      health: healthResponse,
-      holdings: holdingsResponse.holdings,
-      liabilities: liabilitiesResponse.liabilities,
-      recurring: recurringResponse.recurring || recurringResponse.recurring_transactions,
-      snapshots: snapshotsResponse.snapshots,
-    });
-  };
-
-  const getTransactions = async (input: GetTransactionsInput): Promise<GetTransactionsOutput> => {
-    const response = await apiRequest<WarmApiTransactionsResponse>(
-      '/api/export',
-      {
-        cursor: input.cursor,
-        dataset: 'transactions',
-        last_knowledge: input.last_knowledge,
-        limit: String(input.limit),
-        search: input.search,
-      },
-      options
-    );
-    const nextCursor = response.pagination?.next_cursor ?? null;
-
-    return {
-      generated_at: response.generated_at ?? null,
-      next_knowledge: response.next_knowledge ?? null,
-      pagination: {
-        has_more: nextCursor !== null,
-        limit: response.pagination?.limit ?? input.limit,
-        next_cursor: nextCursor,
-      },
-      txns: (response.transactions || []).map((transaction) => ({
-        amount: roundMoney(transaction.amount ?? 0),
-        category: transaction.primary_category ?? null,
-        date: transaction.date ?? null,
-        description: transaction.name ?? null,
-        detailed_category: transaction.detailed_category ?? null,
-        id: transaction.id ?? null,
-        merchant: transaction.merchant_name ?? null,
-      })),
-    };
   };
 
   const verifyKey = async (): Promise<VerifyKeyOutput> => {
@@ -649,8 +371,8 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
   };
 
   return {
-    getAccounts,
-    getFinancialState,
+    getFinancialContext,
+    getFinancialContextMeta,
     getTransactions,
     verifyKey,
   };
