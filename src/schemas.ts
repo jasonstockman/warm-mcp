@@ -6,6 +6,34 @@ const dateTimeSchema = z.string().datetime({ offset: true });
 
 export const emptyInputSchema = {};
 
+export const automationInputSchema = z
+  .object({
+    body: z.record(z.unknown()).optional(),
+    params: z.record(z.string()).optional(),
+  })
+  .strict();
+
+export const searchOperationsInputSchema = {
+  query: z.string().max(200).optional().describe('Words describing the action or data you need.'),
+};
+
+export const describeOperationInputSchema = {
+  operation_id: z.string().min(1),
+  input: automationInputSchema
+    .optional()
+    .describe('Exact intended input. Required to obtain approval for a write operation.'),
+};
+
+export const invokeOperationInputSchema = {
+  operation_id: z.string().min(1),
+  input: automationInputSchema.optional(),
+  approval_id: z
+    .string()
+    .uuid()
+    .optional()
+    .describe('Approval ID returned by describe_operation for the exact write input.'),
+};
+
 export const transactionIndexSchema = z
   .object({
     total: z.number().int().nonnegative(),

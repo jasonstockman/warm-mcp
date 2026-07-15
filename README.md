@@ -1,6 +1,6 @@
 # Warmio
 
-Warmio is the one-command CLI and read-only MCP server for Warm financial data.
+Warmio is the one-command CLI with separate compact MCP modes for financial context and supported automations.
 
 ## Install
 
@@ -8,26 +8,32 @@ Warmio is the one-command CLI and read-only MCP server for Warm financial data.
 npx -y @warmio/mcp@latest
 ```
 
-The installer detects supported MCP clients, prompts for your Warm API key, validates it, and
-writes the local `stdio` MCP config automatically. The key is stored once in your local Warm
-profile instead of being duplicated into every MCP client config.
+The installer detects supported MCP clients, prompts for a mode-specific Warm API key, validates
+its audience, and writes the local `stdio` MCP config automatically. Context and automation keys
+are stored separately and are never shared between modes.
 
 ## Requirements
 
 - Warm Pro
-- A Warm API key from [Settings -> API Keys](https://warm.io/settings)
+- A context key or an automation key from [Settings -> API Keys](https://warm.io/settings)
 - Node.js 18+
 
 ## Manual MCP Config
 
-Use this when a client asks you to paste an MCP JSON config:
+Context is the default read-only mode. Install it with its own key:
+
+```bash
+npx -y @warmio/mcp@latest install --mode context
+```
+
+Use this when a client asks you to paste a context MCP JSON config:
 
 ```json
 {
   "mcpServers": {
     "warm": {
       "command": "npx",
-      "args": ["-y", "@warmio/mcp@latest", "mcp"]
+      "args": ["-y", "@warmio/mcp@latest", "mcp", "--mode", "context"]
     }
   }
 }
@@ -40,16 +46,46 @@ On Windows, prefer:
   "mcpServers": {
     "warm": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "@warmio/mcp@latest", "mcp"]
+      "args": ["/c", "npx", "-y", "@warmio/mcp@latest", "mcp", "--mode", "context"]
     }
   }
 }
 ```
 
-Optional auth overrides:
+Context credential overrides:
 
-- `WARM_API_KEY`
-- `WARM_API_KEY_FILE`
+- `WARM_CONTEXT_API_KEY`
+- `WARM_CONTEXT_API_KEY_FILE`
+
+Automation is intentionally opt-in and must use a distinct automation key:
+
+```bash
+npx -y @warmio/mcp@latest install --mode automation
+```
+
+```json
+{
+  "mcpServers": {
+    "warm-automation": {
+      "command": "npx",
+      "args": ["-y", "@warmio/mcp@latest", "mcp", "--mode", "automation"]
+    }
+  }
+}
+```
+
+Automation credential overrides are `WARM_AUTOMATION_API_KEY` and
+`WARM_AUTOMATION_API_KEY_FILE`. The default key files are `${WARM_CONFIG_DIR}/context_api_key`
+and `${WARM_CONFIG_DIR}/automation_api_key`; `WARM_API_KEY` and `WARM_API_KEY_FILE` are not read.
+The API verifies the key audience before every MCP tool call, so a context key cannot operate the
+automation server and an automation key cannot operate the context server.
+
+Installer validation fails closed for API responses `401` and `403`. A `429` rate limit or a
+temporary network failure remains a soft validation failure so setup can finish; the MCP server
+will still validate the key audience before serving tools.
+
+Both modes send API requests to `https://app.warm.io` by default. Set `WARM_API_URL` only when an
+explicit API base URL override is required.
 
 ## Universal Copy/Paste Setup Prompt
 
@@ -62,7 +98,7 @@ Use this MCP server config:
   "mcpServers": {
     "warm": {
       "command": "npx",
-      "args": ["-y", "@warmio/mcp@latest", "mcp"]
+      "args": ["-y", "@warmio/mcp@latest", "mcp", "--mode", "context"]
     }
   }
 }
@@ -95,7 +131,7 @@ All CLI read commands print JSON.
 If your MCP client supports Streamable HTTP, you can run:
 
 ```bash
-npx -y @warmio/mcp@latest http --host 127.0.0.1 --port 3000 --path /mcp
+npx -y @warmio/mcp@latest http --mode context --host 127.0.0.1 --port 3000 --path /mcp
 ```
 
 Relevant optional environment variables:
@@ -104,16 +140,31 @@ Relevant optional environment variables:
 - `WARM_MCP_HTTP_PORT`
 - `WARM_MCP_HTTP_PATH`
 - `WARM_MCP_ALLOWED_HOSTS`
+- `WARM_MCP_AUTH_TOKEN`
 
-## Core Tools
+`WARM_MCP_AUTH_TOKEN` is a separate bearer token for the MCP HTTP transport, never a Warm API
+key. Automation HTTP always requires it, including on loopback. Context HTTP requires it whenever
+the server binds anything other than the exact SDK-protected loopback hosts `127.0.0.1`,
+`localhost`, or `::1`. Send it on every request as
+`Authorization: Bearer <WARM_MCP_AUTH_TOKEN>`.
 
-Warm's v6 MCP surface is exactly three tools:
+## MCP Tools
+
+Context mode remains exactly three read-only tools:
 
 | Tool                    | Description                                      |
 | ----------------------- | ------------------------------------------------ |
 | `get_financial_context` | Return compact `FinancialContext` JSON           |
 | `get_transactions`      | Return one month page or the fixed latest window |
 | `verify_key`            | Validate the configured API key                  |
+
+Automation mode is also exactly three tools:
+
+| Tool                 | Description                                                        |
+| -------------------- | ------------------------------------------------------------------ |
+| `search_operations`  | Find supported operations without loading the full catalog         |
+| `describe_operation` | Read an operation schema and request approval for a write input       |
+| `invoke_operation`   | Invoke the operation; every write requires an `approval_id`           |
 
 ## Parameter Contract
 
@@ -128,6 +179,9 @@ Warm's v6 MCP surface is exactly three tools:
 - A well-formed month outside the covered range returns an error.
 - A well-formed month inside the covered range with no transactions returns `count: 0` and `items: []`.
 - Transaction amounts follow the Plaid sign convention: positive = expense/debit, negative = income/credit.
+- `describe_operation` returns `approval: { id, status, approval_url, expires_at }` for every write operation.
+- `invoke_operation` accepts that approval as `approval_id`; confirmation tokens are not supported.
+- Tool and Warm API failures return structured MCP results with `isError: true`; malformed MCP input remains a protocol error.
 
 ## Shapes
 
@@ -239,21 +293,20 @@ Returns:
 }
 ```
 
-## v6 Breaking Changes
+## v7 Breaking Changes
 
-v6 is a clean break with no backwards compatibility and no alias window.
+v7 is a clean pre-launch cutover with no backwards compatibility or alias window.
 
-- `get_accounts` is removed. Use `get_financial_context.status.accounts`.
-- `get_financial_state` is removed. Use `get_financial_context`.
-- `get_transactions` no longer supports `cursor`, `search`, or `last_knowledge`.
-- The old `txns` transaction array is gone. Transaction responses use `items`.
-- Renamed fields follow the FinancialContext contract, including `subcategory`, `used_percent`,
-  `status`, `due_date`, and `other_assets`.
+- API keys are audience-bound: context keys cannot invoke actions and automation keys cannot run context mode.
+- `X-API-Key` is removed. Use `Authorization: Bearer`.
+- Automation is a separate opt-in MCP server mode, not extra tools on the context server.
 
 ## Security
 
-- Read-only: no write, delete, transfer, or mutation tools
-- Scoped: the key only reads the owner's Warm data
+- Context mode is read-only and uses a context-only key.
+- Automation mode uses a separate automation-only key and a curated server-side operation allowlist.
+- Streamable HTTP is bearer-protected with an independent `WARM_MCP_AUTH_TOKEN` where required.
+- Write operations return an approval `{ id, status, approval_url, expires_at }`; invoke the exact input with its `approval_id`.
 - Revocable: delete the key in Settings to revoke access immediately
 
 ## Development

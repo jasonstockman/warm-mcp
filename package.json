@@ -1,7 +1,7 @@
 {
   "name": "@warmio/mcp",
-  "version": "6.0.0",
-  "description": "Warm CLI and MCP server for personal financial data",
+  "version": "7.0.0",
+  "description": "Warm CLI and compact context or automation MCP server",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -1,7 +1,8 @@
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { timingSafeEqual } from 'node:crypto';
 
-import { createWarmServer } from './server.js';
+import { createWarmServer, type WarmServerMode } from './server.js';
 
 const DEFAULT_HTTP_HOST = '127.0.0.1';
 const DEFAULT_HTTP_PORT = 3000;
@@ -9,9 +10,43 @@ const DEFAULT_HTTP_PATH = '/mcp';
 
 export interface HttpServerOptions {
   allowedHosts?: string[];
+  authToken?: string;
   host?: string;
+  mode?: WarmServerMode;
   path?: string;
   port?: number;
+}
+
+export function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1';
+}
+
+export function validateHttpSecurity(options: Pick<HttpServerOptions, 'authToken' | 'host' | 'mode'>): void {
+  const mode = options.mode || 'context';
+  const hasAuthToken = Boolean(options.authToken?.trim());
+  if (mode === 'automation' && !hasAuthToken) {
+    throw new Error('Automation MCP HTTP requires WARM_MCP_AUTH_TOKEN.');
+  }
+  if (!isLoopbackHost(options.host || DEFAULT_HTTP_HOST) && !hasAuthToken) {
+    throw new Error('Non-loopback MCP HTTP requires WARM_MCP_AUTH_TOKEN.');
+  }
+}
+
+export function hasValidTransportBearerToken(
+  authorization: string | undefined,
+  authToken: string
+): boolean {
+  const expected = `Bearer ${authToken}`;
+  if (!authorization) {
+    return false;
+  }
+  const actualBuffer = Buffer.from(authorization);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
 function parsePort(value: string | undefined, fallback: number): number {
@@ -56,12 +91,14 @@ export function resolveHttpServerOptions(
     allowedHosts:
       overrides.allowedHosts ??
       parseAllowedHosts(process.env.WARM_MCP_ALLOWED_HOSTS || process.env.MCP_ALLOWED_HOSTS),
+    authToken: overrides.authToken ?? process.env.WARM_MCP_AUTH_TOKEN?.trim() ?? '',
     host:
       overrides.host ||
       process.env.WARM_MCP_HTTP_HOST ||
       process.env.MCP_HOST ||
       process.env.HOST ||
       DEFAULT_HTTP_HOST,
+    mode: overrides.mode ?? 'context',
     path: normalizePath(
       overrides.path || process.env.WARM_MCP_HTTP_PATH || process.env.MCP_PATH || DEFAULT_HTTP_PATH
     ),
@@ -83,13 +120,22 @@ function sendJsonMethodNotAllowed(res: {
 
 export async function startHttpServer(options: HttpServerOptions = {}) {
   const resolved = resolveHttpServerOptions(options);
+  validateHttpSecurity(resolved);
   const app = createMcpExpressApp({
     ...(resolved.allowedHosts.length > 0 ? { allowedHosts: resolved.allowedHosts } : {}),
     host: resolved.host,
   });
 
   app.post(resolved.path, async (req: any, res: any) => {
-    const server = createWarmServer();
+    if (
+      resolved.authToken &&
+      !hasValidTransportBearerToken(req.get('authorization'), resolved.authToken)
+    ) {
+      res.status(401).json(jsonRpcError('Unauthorized MCP transport request.'));
+      return;
+    }
+
+    const server = createWarmServer({ mode: resolved.mode });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });

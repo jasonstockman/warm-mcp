@@ -3,7 +3,7 @@
 import { install } from './install.js';
 import { startHttpServer } from './http.js';
 import { loadDotEnv } from './load-env.js';
-import { createWarmServer } from './server.js';
+import { createWarmServer, type WarmServerMode } from './server.js';
 import { AdaptiveStdioTransport } from './stdio.js';
 import { createWarmApiClient } from './warm-api-client.js';
 
@@ -23,6 +23,7 @@ interface CliOptions {
   httpPath?: string;
   httpPort?: number;
   latest?: true;
+  mode: WarmServerMode;
   month?: string;
   validateApiKey: boolean;
 }
@@ -39,9 +40,9 @@ function printUsage(): void {
   console.log('  warmio');
   console.log('    Run the interactive installer');
   console.log('');
-  console.log('  warmio install [--force] [--no-validate]');
-  console.log('  warmio mcp');
-  console.log('  warmio http [--host 127.0.0.1] [--port 3000] [--path /mcp]');
+  console.log('  warmio install --mode context|automation [--force] [--no-validate]');
+  console.log('  warmio mcp [--mode context|automation]');
+  console.log('  warmio http [--mode context|automation] [--host 127.0.0.1] [--port 3000] [--path /mcp]');
   console.log('  warmio context get');
   console.log('  warmio context meta');
   console.log('  warmio transactions get --month YYYY-MM');
@@ -56,6 +57,7 @@ function parseCliArgs(args: string[]): CliOptions {
   const options: CliOptions = {
     command: isInteractiveSession() ? 'install' : 'mcp',
     force: false,
+    mode: 'context',
     validateApiKey: true,
   };
 
@@ -134,6 +136,16 @@ function parseCliArgs(args: string[]): CliOptions {
       continue;
     }
 
+    if (arg === '--mode') {
+      const mode = args[index + 1];
+      if (mode !== 'context' && mode !== 'automation') {
+        throw new Error('Expected --mode context or --mode automation.');
+      }
+      options.mode = mode;
+      index += 1;
+      continue;
+    }
+
     if (arg === '--host') {
       options.httpHost = args[index + 1];
       index += 1;
@@ -199,8 +211,8 @@ function printJson(value: unknown): void {
   console.log(JSON.stringify(value, null, 2));
 }
 
-export async function startStdioServer() {
-  const server = createWarmServer();
+export async function startStdioServer(mode: WarmServerMode = 'context') {
+  const server = createWarmServer({ mode });
   const transport = new AdaptiveStdioTransport();
   await server.connect(transport);
   return server;
@@ -229,18 +241,20 @@ async function main(): Promise<void> {
       printUsage();
       return;
     case 'mcp':
-      await startStdioServer();
+      await startStdioServer(options.mode);
       return;
     case 'http':
       await startHttpServer({
         host: options.httpHost,
         path: options.httpPath,
         port: options.httpPort,
+        mode: options.mode,
       });
       return;
     case 'install':
       await install({
         force: options.force,
+        mode: options.mode,
         validateApiKey: options.validateApiKey,
       });
       return;
