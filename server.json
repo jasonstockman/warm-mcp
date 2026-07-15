@@ -3,13 +3,13 @@
   "name": "io.github.jasonstockman/warmio",
   "title": "Warm",
   "description": "Context and automation MCP server for Warm financial data and approved write operations.",
-  "version": "9.0.0",
+  "version": "9.1.0",
   "websiteUrl": "https://warm.io",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@warmio/mcp",
-      "version": "9.0.0",
+      "version": "9.1.0",
       "transport": {
         "type": "stdio"
       },
