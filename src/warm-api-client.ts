@@ -1,5 +1,9 @@
 import { getWarmApiKeyPath, readConfigFile } from './config-paths.js';
 import {
+  API_ORIGIN,
+  apiEndpointManifest,
+} from '@warmio/contracts/api';
+import {
   WARM_MCP_CREDENTIALS,
   WARM_MCP_INSTALLER_COMMANDS,
   type PrivateMcpMode,
@@ -107,12 +111,27 @@ interface WarmApiVerifyResponse {
   valid?: boolean;
 }
 
-const DEFAULT_API_URL = process.env.WARM_API_URL || 'https://app.warm.io';
+const DEFAULT_API_URL = process.env.WARM_API_URL || API_ORIGIN;
 const DEFAULT_REQUEST_TIMEOUT_MS = (() => {
   const raw = Number(process.env.WARM_API_TIMEOUT_MS || 10_000);
   return Number.isFinite(raw) && raw > 0 ? raw : 10_000;
 })();
 const cachedApiKeys = new Map<PrivateMcpMode, string | null>();
+
+const endpointByOperationId = Object.fromEntries(
+  apiEndpointManifest.map((endpoint) => [endpoint.operation_id, endpoint])
+) as Record<(typeof apiEndpointManifest)[number]['operation_id'], (typeof apiEndpointManifest)[number]>;
+
+function getEndpointPath(
+  operationId: keyof typeof endpointByOperationId,
+  audience: PrivateMcpMode
+): string {
+  const endpoint = endpointByOperationId[operationId];
+  if (endpoint.audience !== audience) {
+    throw new Error(`API operation ${operationId} is not available to ${audience}.`);
+  }
+  return endpoint.path;
+}
 
 function getRequestSignal(timeoutMs: number): AbortSignal {
   if (typeof AbortSignal.timeout === 'function') {
@@ -266,11 +285,14 @@ async function requestSuccessfulJson<TResponse>(
 
 export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApiClient {
   const getFinancialContext = async (): Promise<FinancialContext> =>
-    await requestSuccessfulJson<FinancialContext>({ endpoint: '/api/financial-context' }, options);
+    await requestSuccessfulJson<FinancialContext>(
+      { endpoint: getEndpointPath('getFinancialContext', 'context') },
+      options
+    );
 
   const getFinancialContextMeta = async (): Promise<FinancialContextMeta> =>
     await requestSuccessfulJson<FinancialContextMeta>(
-      { endpoint: '/api/financial-context/meta' },
+      { endpoint: getEndpointPath('getFinancialContextMeta', 'context') },
       options
     );
 
@@ -281,13 +303,19 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
     }
     if (typeof rawInput.month === 'string') {
       return await requestSuccessfulJson<GetTransactionsOutput>(
-        { endpoint: '/api/financial-context/transactions', query: { month: rawInput.month } },
+        {
+          endpoint: getEndpointPath('getFinancialContextTransactions', 'context'),
+          query: { month: rawInput.month },
+        },
         options
       );
     }
     if (rawInput.latest === true) {
       return await requestSuccessfulJson<GetTransactionsOutput>(
-        { endpoint: '/api/financial-context/transactions', query: { latest: '1' } },
+        {
+          endpoint: getEndpointPath('getFinancialContextTransactions', 'context'),
+          query: { latest: '1' },
+        },
         options
       );
     }
@@ -297,7 +325,7 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
 
   const verifyKey = async (): Promise<VerifyKeyOutput> => {
     const response = await requestSuccessfulJson<WarmApiVerifyResponse>(
-      { endpoint: '/api/verify' },
+      { endpoint: getEndpointPath('verifyApiAccess', 'context') },
       options
     );
     return {
@@ -323,7 +351,7 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
     await requestSuccessfulJson<{ operations: AutomationOperation[] }>(
       {
         body: query ? { query } : {},
-        endpoint: '/api/automation/operations/search',
+        endpoint: getEndpointPath('searchOperations', 'automation'),
         method: 'POST',
       },
       options
@@ -333,7 +361,7 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
     await requestSuccessfulJson<DescribeOperationOutput>(
       {
         body: { operation_id: operationId, ...(input ? { input } : {}) },
-        endpoint: '/api/automation/operations/describe',
+        endpoint: getEndpointPath('describeOperation', 'automation'),
         method: 'POST',
       },
       options
@@ -351,7 +379,7 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
           input: input ?? {},
           ...(approvalId ? { approval_id: approvalId } : {}),
         },
-        endpoint: '/api/automation/operations/invoke',
+        endpoint: getEndpointPath('invokeOperation', 'automation'),
         method: 'POST',
       },
       options

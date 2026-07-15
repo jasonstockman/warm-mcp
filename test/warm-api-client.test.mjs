@@ -139,11 +139,11 @@ test('server manifest describes the v9 mode selector and current credentials', (
   const packageManifest = JSON.parse(
     readFileSync(new URL('../package.json', import.meta.url), 'utf8')
   );
-  assert.equal(manifest.version, '9.0.0');
+  assert.equal(manifest.version, packageManifest.version);
   assert.equal(packageManifest.mcpName, manifest.name);
   assert.equal(manifest.packages.length, 1);
   const packageEntry = manifest.packages[0];
-  assert.equal(packageEntry.version, '9.0.0');
+  assert.equal(packageEntry.version, packageManifest.version);
   assert.deepEqual(
     packageEntry.packageArguments.map((argument) => argument.value ?? argument.valueHint),
     ['mcp', '--mode', 'mode']

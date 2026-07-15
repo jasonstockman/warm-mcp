@@ -1,18 +1,16 @@
-export const WARM_CONTEXT_TOOL_NAMES = [
-  'get_financial_context',
-  'get_transactions',
-  'verify_key',
-] as const;
+import { privateMcpToolDefinitions } from '@warmio/contracts/mcp';
 
-export const WARM_AUTOMATION_TOOL_NAMES = [
-  'search_operations',
-  'describe_operation',
-  'invoke_operation',
-] as const;
+export const WARM_CONTEXT_TOOL_NAMES = privateMcpToolDefinitions
+  .filter((tool) => tool.mode === 'context')
+  .map((tool) => tool.name);
 
-export const WARM_TOOL_NAMES = [...WARM_CONTEXT_TOOL_NAMES, ...WARM_AUTOMATION_TOOL_NAMES] as const;
+export const WARM_AUTOMATION_TOOL_NAMES = privateMcpToolDefinitions
+  .filter((tool) => tool.mode === 'automation')
+  .map((tool) => tool.name);
 
-export type WarmToolName = (typeof WARM_TOOL_NAMES)[number];
+export const WARM_TOOL_NAMES = privateMcpToolDefinitions.map((tool) => tool.name);
+
+export type WarmToolName = (typeof privateMcpToolDefinitions)[number]['name'];
 
 export type {
   Account,
