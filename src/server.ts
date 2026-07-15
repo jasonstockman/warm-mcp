@@ -11,6 +11,11 @@ import {
   type ToolAnnotations,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z, type ZodRawShape } from 'zod';
+import {
+  getTransactionsMcpInputSchema,
+  normalizeGetTransactionsMcpInput,
+  privateMcpToolDefinitions,
+} from '@warmio/contracts/mcp';
 
 import {
   createWarmApiClient,
@@ -19,13 +24,6 @@ import {
   verifyWarmApiKey,
   WarmApiError,
 } from './warm-api-client.js';
-import {
-  describeOperationInputSchema,
-  emptyInputSchema,
-  getTransactionsInputSchema,
-  invokeOperationInputSchema,
-  searchOperationsInputSchema,
-} from './schemas.js';
 
 export { createWarmApiClient, getConfiguredApiKey, verifyWarmApiKey, WarmApiError };
 export type { WarmApiClientOptions } from './warm-api-client.js';
@@ -65,8 +63,7 @@ function createStructuredToolResult<TStructuredContent extends Record<string, un
         text: JSON.stringify(structuredContent, null, 2),
       },
     ],
-    ...(isError ? { isError: true } : {}),
-    structuredContent,
+    ...(isError ? { isError: true } : { structuredContent }),
   };
 }
 
@@ -76,6 +73,7 @@ interface WarmToolDefinition {
   handler: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
   inputShape: ZodRawShape;
   name: string;
+  outputSchema: z.ZodTypeAny;
 }
 
 function createToolFailure(error: unknown) {
@@ -101,26 +99,32 @@ function createToolFailure(error: unknown) {
   );
 }
 
-function parseGetTransactionsArgs(args: Record<string, unknown>) {
-  const hasMonth = typeof args.month === 'string';
-  const hasLatestKey = Object.prototype.hasOwnProperty.call(args, 'latest');
-  const hasLatest = args.latest === true;
-
-  if (hasMonth && hasLatestKey) {
-    throw new Error('`month` and `latest` are mutually exclusive.');
-  }
-
-  if (hasMonth) {
-    return { month: args.month as string };
-  }
-
-  if (hasLatest || Object.keys(args).length === 0) {
-    return { latest: true as const };
-  }
-
-  throw new Error(
-    'Call get_transactions with `month` in YYYY-MM format, `latest: true`, or no arguments.'
+function getToolDefinition(name: string, mode: WarmServerMode) {
+  const definition = privateMcpToolDefinitions.find(
+    (candidate) => candidate.mode === mode && candidate.name === name
   );
+  if (!definition) throw new Error(`Missing ${mode} MCP contract for ${name}.`);
+  return definition;
+}
+
+function getListToolOutputSchema(outputSchema: z.ZodTypeAny) {
+  const schema = toJsonSchemaCompat(outputSchema, {
+    pipeStrategy: 'output',
+    strictUnions: true,
+  });
+
+  if (schema.type === 'object') return schema;
+  if (
+    Array.isArray(schema.anyOf) &&
+    schema.anyOf.length > 0 &&
+    schema.anyOf.every(
+      (candidate) =>
+        typeof candidate === 'object' && candidate !== null && candidate.type === 'object'
+    )
+  ) {
+    return { ...schema, type: 'object' };
+  }
+  return undefined;
 }
 
 export function registerWarmTools(
@@ -131,65 +135,42 @@ export function registerWarmTools(
   const client = createWarmApiClient({ ...options, audience: mode });
   const contextTools: WarmToolDefinition[] = [
     {
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-      description:
-        'Read-only compact FinancialContext JSON. Includes status.position, status.accounts, transaction index total/months, recurring, budgets, goals, snapshots, liabilities, holdings, and health. Transaction items are not inline; use get_transactions for items.',
+      ...getToolDefinition('get_financial_context', 'context'),
       handler: async () => await client.getFinancialContext(),
-      inputShape: emptyInputSchema,
-      name: 'get_financial_context',
     },
     {
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-      description:
-        'Read-only transactions from the FinancialContext artifact. Pass exactly one selector: `month` in YYYY-MM format for a month page, or `latest: true` for the fixed latest window. A bare call with no arguments defaults to `latest: true`. The latest window is fixed at 10 days and is not caller-configurable. `month` and `latest` are mutually exclusive. Months outside the covered range return an error.',
+      ...getToolDefinition('get_transactions', 'context'),
       handler: async (args) => {
-        return await client.getTransactions(parseGetTransactionsArgs(args));
+        return await client.getTransactions(normalizeGetTransactionsMcpInput(args));
       },
-      inputShape: getTransactionsInputSchema,
-      name: 'get_transactions',
     },
     {
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-      description: 'Read-only API key validation for the configured Warm account.',
+      ...getToolDefinition('verify_key', 'context'),
       handler: async () => await client.validateAudience(),
-      inputShape: emptyInputSchema,
-      name: 'verify_key',
     },
   ];
   const automationTools: WarmToolDefinition[] = [
     {
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-      description:
-        'Search the supported Warm operation catalog. Use this first to find the smallest matching operation.',
+      ...getToolDefinition('search_operations', 'automation'),
       handler: async (args) =>
         await client.searchOperations(typeof args.query === 'string' ? args.query : undefined),
-      inputShape: searchOperationsInputSchema,
-      name: 'search_operations',
     },
     {
-      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
-      description:
-        'Describe one operation, including its input schema and risk. For write operations, pass the exact intended input to receive an approval with its ID, status, URL, and expiry.',
+      ...getToolDefinition('describe_operation', 'automation'),
       handler: async (args) =>
         await client.describeOperation(
           args.operation_id as string,
           args.input as Parameters<typeof client.describeOperation>[1]
         ),
-      inputShape: describeOperationInputSchema,
-      name: 'describe_operation',
     },
     {
-      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
-      description:
-        'Invoke one previously discovered Warm operation. Every write operation requires the approval_id returned for the exact same input by describe_operation.',
+      ...getToolDefinition('invoke_operation', 'automation'),
       handler: async (args) =>
         await client.invokeOperation(
           args.operation_id as string,
           args.input as Parameters<typeof client.invokeOperation>[1],
           typeof args.approval_id === 'string' ? args.approval_id : undefined
         ),
-      inputShape: invokeOperationInputSchema,
-      name: 'invoke_operation',
     },
   ];
   const tools = mode === 'automation' ? automationTools : contextTools;
@@ -201,15 +182,19 @@ export function registerWarmTools(
   });
 
   server.server.setRequestHandler(ListToolsRequestSchema, () => ({
-    tools: tools.map((tool) => ({
-      description: tool.description,
-      annotations: tool.annotations,
-      inputSchema: toJsonSchemaCompat(z.object(tool.inputShape).strict(), {
-        pipeStrategy: 'input',
-        strictUnions: true,
-      }),
-      name: tool.name,
-    })),
+    tools: tools.map((tool) => {
+      const outputSchema = getListToolOutputSchema(tool.outputSchema);
+      return {
+        description: tool.description,
+        annotations: tool.annotations,
+        inputSchema: toJsonSchemaCompat(z.object(tool.inputShape).strict(), {
+          pipeStrategy: 'input',
+          strictUnions: true,
+        }),
+        ...(outputSchema ? { outputSchema } : {}),
+        name: tool.name,
+      };
+    }),
   }));
 
   server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -227,12 +212,11 @@ export function registerWarmTools(
       );
     }
     if (tool.name === 'get_transactions') {
-      try {
-        parseGetTransactionsArgs(parseResult.data);
-      } catch (error) {
+      const transactionInput = await getTransactionsMcpInputSchema.safeParseAsync(parseResult.data);
+      if (!transactionInput.success) {
         throw new McpError(
           ErrorCode.InvalidParams,
-          error instanceof Error ? error.message : String(error)
+          `Invalid arguments for tool ${request.params.name}: ${transactionInput.error.message}`
         );
       }
     }
