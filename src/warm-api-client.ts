@@ -3,6 +3,35 @@ import {
   readConfigFile,
   type WarmApiAudience,
 } from './config-paths.js';
+import type {
+  AutomationInput,
+  AutomationOperation,
+  FinancialContext,
+  FinancialContextAccount,
+  FinancialContextBudget,
+  FinancialContextGoal,
+  FinancialContextHealth,
+  FinancialContextHolding,
+  FinancialContextLiability,
+  FinancialContextMeta,
+  FinancialContextPosition,
+  FinancialContextRecurring,
+  FinancialContextSnapshot,
+  FinancialContextStatus,
+  FinancialContextTransaction,
+  FinancialContextTransactionIndex,
+  LatestTransactions,
+  TransactionMonth,
+} from '@warmio/contracts/types';
+
+export type {
+  AutomationInput,
+  AutomationOperation,
+  FinancialContext,
+  FinancialContextMeta,
+  LatestTransactions,
+  TransactionMonth,
+} from '@warmio/contracts/types';
 
 export interface WarmApiClientOptions {
   audience?: WarmApiAudience;
@@ -12,197 +41,22 @@ export interface WarmApiClientOptions {
   requestTimeoutMs?: number;
 }
 
-export interface TransactionIndex {
-  total: number;
-  months: Array<{
-    month: string;
-    count: number;
-  }>;
-}
-
-export interface Position {
-  date: string | null;
-  net_worth: number | null;
-  cash: number | null;
-  debt: number | null;
-  investments: number | null;
-  other_assets: number | null;
-  total_assets: number | null;
-}
-
-export interface Account {
-  id: string;
-  name: string;
-  type: 'depository' | 'credit' | 'loan' | 'investment' | 'brokerage' | 'other';
-  subtype: string | null;
-  group: 'cash' | 'debt' | 'investments' | null;
-  institution: string | null;
-  mask: string | null;
-  balance: number | null;
-  available: number | null;
-  currency: string | null;
-  updated_at: string | null;
-}
-
-export interface Status {
-  position: Position | null;
-  accounts: Account[];
-}
-
-export interface Recurring {
-  id: string;
-  account_id: string | null;
-  direction: 'inflow' | 'outflow' | null;
-  frequency:
-    | 'WEEKLY'
-    | 'BIWEEKLY'
-    | 'MONTHLY'
-    | 'QUARTERLY'
-    | 'SEMI_ANNUALLY'
-    | 'ANNUALLY'
-    | null;
-  status: 'active' | 'inactive' | 'dismissed' | null;
-  merchant: string | null;
-  amount: number | null;
-  next_date: string | null;
-}
-
-export interface Budget {
-  id: string;
-  name: string;
-  type: 'category' | 'merchant';
-  period: 'weekly' | 'biweekly' | 'monthly';
-  status: 'under' | 'warning' | 'over';
-  amount: number;
-  spent: number;
-  remaining: number;
-  used_percent: number;
-}
-
-export interface Goal {
-  id: string;
-  name: string;
-  category: string;
-  status: 'not_started' | 'in_progress' | 'on_track' | 'behind' | 'completed';
-  target: number;
-  current: number;
-  progress_percent: number;
-  target_date: string | null;
-}
-
-export interface Snapshot {
-  date: string;
-  net_worth: number | null;
-  cash: number | null;
-  debt: number | null;
-  income: number | null;
-  expenses: number | null;
-  cash_flow: number | null;
-  savings_rate: number | null;
-  investments: number | null;
-  assets: number | null;
-  health_score: number | null;
-}
-
-export interface Liability {
-  account_id: string | null;
-  type: 'credit' | 'student' | 'mortgage' | 'other' | null;
-  balance: number | null;
-  minimum_payment: number | null;
-  due_date: string | null;
-  interest_rate: number | null;
-  rate_type: 'fixed' | 'variable' | null;
-  overdue: boolean | null;
-}
-
-export interface Holding {
-  account_id: string | null;
-  symbol: string | null;
-  name: string | null;
-  type: 'cash' | 'derivative' | 'equity' | 'etf' | 'fixed_income' | 'mutual_fund' | 'other' | null;
-  quantity: number | null;
-  value: number | null;
-  cost_basis: number | null;
-}
-
-export interface Health {
-  score: number;
-  label: 'Needs Attention' | 'Good' | 'Strong';
-  level: 'critical' | 'poor' | 'fair' | 'good' | 'strong';
-  summary: string;
-  data_completeness: number;
-  pillars: {
-    spend: number | null;
-    save: number | null;
-    borrow: number | null;
-    build: number | null;
-  } | null;
-}
-
-export interface FinancialContext extends Record<string, unknown> {
-  version: 'v1';
-  updated_at: string;
-  currency: 'USD';
-  status: Status;
-  transactions: TransactionIndex;
-  recurring: Recurring[];
-  budgets: Budget[];
-  goals: Goal[];
-  snapshots: Snapshot[];
-  liabilities: Liability[];
-  holdings: Holding[];
-  health: Health | null;
-}
-
-export interface Transaction {
-  id: string;
-  account_id: string | null;
-  date: string | null;
-  amount: number;
-  merchant: string | null;
-  name: string | null;
-  category: string | null;
-  subcategory: string | null;
-  pending: boolean | null;
-  currency: string | null;
-}
-
-export interface TransactionMonth extends Record<string, unknown> {
-  month: string;
-  start_date: string;
-  end_date: string;
-  count: number;
-  items: Transaction[];
-}
-
-export interface LatestTransactions extends Record<string, unknown> {
-  since: string;
-  window_days: 10;
-  count: number;
-  items: Transaction[];
-}
-
+export type Account = FinancialContextAccount;
+export type Budget = FinancialContextBudget;
+export type Goal = FinancialContextGoal;
+export type Health = FinancialContextHealth;
+export type Holding = FinancialContextHolding;
+export type Liability = FinancialContextLiability;
+export type Position = FinancialContextPosition;
+export type Recurring = FinancialContextRecurring;
+export type Snapshot = FinancialContextSnapshot;
+export type Status = FinancialContextStatus;
+export type Transaction = FinancialContextTransaction;
+export type TransactionIndex = FinancialContextTransactionIndex;
 export type GetTransactionsInput =
   | { month: string; latest?: never }
   | { latest: true; month?: never };
-
 export type GetTransactionsOutput = TransactionMonth | LatestTransactions;
-
-export interface FinancialContextMeta extends Record<string, unknown> {
-  version: 'v1';
-  user_id: string;
-  context_id: string;
-  generated_at: string;
-  updated_at: string;
-  content_hash: string;
-  byte_length: number;
-  counts: {
-    accounts: number;
-    transaction_months: number;
-    transactions: number;
-    snapshots: number;
-  };
-}
 
 export interface VerifyKeyOutput extends Record<string, unknown> {
   audience?: 'automation' | 'context' | 'oauth';
@@ -210,24 +64,9 @@ export interface VerifyKeyOutput extends Record<string, unknown> {
   valid: boolean;
 }
 
-export interface AutomationOperation extends Record<string, unknown> {
-  confirmation_required: boolean;
-  description: string;
-  method: 'DELETE' | 'GET' | 'PATCH' | 'POST' | 'PUT';
-  operation_id: string;
-  path: string;
-  risk: Array<'read' | 'write' | 'destructive' | 'external_effect'>;
-  summary: string;
-}
-
-export interface AutomationInput {
-  body?: Record<string, unknown>;
-  params?: Record<string, string>;
-}
-
-export interface AutomationOperationDescription extends AutomationOperation {
+export type AutomationOperationDescription = AutomationOperation & {
   input_schema: Record<string, unknown>;
-}
+};
 
 export interface DescribeOperationOutput extends Record<string, unknown> {
   approval?: {

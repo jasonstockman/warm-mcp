@@ -5,6 +5,12 @@ import { homedir, platform } from 'os';
 
 import { verifyWarmApiKey, WarmApiError } from './server.js';
 import { getWarmApiKeyPath, readConfigFile, type WarmApiAudience } from './config-paths.js';
+import {
+  WARM_MCP_CLIENTS,
+  WARM_MCP_PACKAGE_SPEC,
+  WARM_MCP_PROJECT_CONFIGS,
+  type WarmMcpClientId,
+} from './manifest.js';
 
 const HOME = homedir();
 const CWD = process.cwd();
@@ -59,43 +65,39 @@ function getClaudeDesktopPath(): string {
   return join(HOME, '.config', 'claude', 'claude_desktop_config.json');
 }
 
-const GLOBAL_CLIENTS: Client[] = [
-  {
-    name: 'Claude Code',
-    configPath: join(HOME, '.claude.json'),
-    format: 'json',
-    alwaysInclude: true,
-  },
-  { name: 'Claude Desktop', configPath: getClaudeDesktopPath(), format: 'json' },
-  { name: 'Cursor', configPath: join(HOME, '.cursor', 'mcp.json'), format: 'json' },
-  {
-    name: 'Windsurf',
-    configPath: join(HOME, '.codeium', 'windsurf', 'mcp_config.json'),
-    format: 'json',
-  },
-  {
-    name: 'OpenCode',
-    configPath: join(HOME, '.config', 'opencode', 'opencode.json'),
-    format: 'json',
-  },
-  { name: 'Codex CLI', configPath: join(HOME, '.codex', 'config.toml'), format: 'toml' },
-  {
-    name: 'Antigravity',
-    configPath: join(HOME, '.gemini', 'antigravity', 'mcp_config.json'),
-    format: 'json',
-  },
-  { name: 'Gemini CLI', configPath: join(HOME, '.gemini', 'settings.json'), format: 'json' },
-];
+function getClientConfigPath(clientId: WarmMcpClientId): string {
+  switch (clientId) {
+    case 'claude-code':
+      return join(HOME, '.claude.json');
+    case 'claude-desktop':
+      return getClaudeDesktopPath();
+    case 'cursor':
+      return join(HOME, '.cursor', 'mcp.json');
+    case 'windsurf':
+      return join(HOME, '.codeium', 'windsurf', 'mcp_config.json');
+    case 'opencode':
+      return join(HOME, '.config', 'opencode', 'opencode.json');
+    case 'codex-cli':
+      return join(HOME, '.codex', 'config.toml');
+    case 'antigravity':
+      return join(HOME, '.gemini', 'antigravity', 'mcp_config.json');
+    case 'gemini-cli':
+      return join(HOME, '.gemini', 'settings.json');
+  }
+}
 
-const PROJECT_CONFIGS = ['.mcp.json', '.cursor/mcp.json', '.vscode/mcp.json'];
-const MCP_PACKAGE_SPEC = '@warmio/mcp@latest';
+const GLOBAL_CLIENTS: Client[] = WARM_MCP_CLIENTS.map((client) => ({
+  ...client,
+  configPath: getClientConfigPath(client.id),
+  alwaysInclude: client.id === 'claude-code',
+}));
 
 function getServerName(mode: WarmApiAudience): string {
   return mode === 'automation' ? 'warm-automation' : 'warm';
 }
 
 function getMcpConfig(mode: WarmApiAudience) {
-  const args = ['-y', MCP_PACKAGE_SPEC, 'mcp', '--mode', mode];
+  const args = ['-y', WARM_MCP_PACKAGE_SPEC, 'mcp', '--mode', mode];
   return platform() === 'win32'
     ? { command: 'cmd', args: ['/c', 'npx', ...args] }
     : { command: 'npx', args };
@@ -103,7 +105,7 @@ function getMcpConfig(mode: WarmApiAudience) {
 
 function detectProjectClients(): Client[] {
   const found: Client[] = [];
-  for (const name of PROJECT_CONFIGS) {
+  for (const name of WARM_MCP_PROJECT_CONFIGS) {
     const configPath = resolve(CWD, name);
     if (existsSync(configPath)) {
       found.push({
@@ -450,8 +452,8 @@ function configureToml(
   const tomlCommand = platform() === 'win32' ? 'cmd' : 'npx';
   const tomlArgs =
     platform() === 'win32'
-      ? `["/c", "npx", "-y", "${MCP_PACKAGE_SPEC}", "mcp", "--mode", "${mode}"]`
-      : `["-y", "${MCP_PACKAGE_SPEC}", "mcp", "--mode", "${mode}"]`;
+      ? `["/c", "npx", "-y", "${WARM_MCP_PACKAGE_SPEC}", "mcp", "--mode", "${mode}"]`
+      : `["-y", "${WARM_MCP_PACKAGE_SPEC}", "mcp", "--mode", "${mode}"]`;
   const warmBlock = `[mcp_servers.${serverName}]${lineEnding}command = "${tomlCommand}"${lineEnding}args = ${tomlArgs}${lineEnding}`;
   const selectedKeyFile =
     mode === 'automation' ? 'WARM_AUTOMATION_API_KEY_FILE' : 'WARM_CONTEXT_API_KEY_FILE';

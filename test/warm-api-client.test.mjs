@@ -126,16 +126,16 @@ test('shared API origin defaults to app.warm.io while honoring WARM_API_URL', as
   await client.getFinancialContext();
 });
 
-test('server manifest describes the v7 mode selector and current credentials', () => {
+test('server manifest describes the v8 mode selector and current credentials', () => {
   const manifest = JSON.parse(readFileSync(new URL('../server.json', import.meta.url), 'utf8'));
   const packageManifest = JSON.parse(
     readFileSync(new URL('../package.json', import.meta.url), 'utf8')
   );
-  assert.equal(manifest.version, '7.0.1');
+  assert.equal(manifest.version, '8.0.0');
   assert.equal(packageManifest.mcpName, manifest.name);
   assert.equal(manifest.packages.length, 1);
   const packageEntry = manifest.packages[0];
-  assert.equal(packageEntry.version, '7.0.1');
+  assert.equal(packageEntry.version, '8.0.0');
   assert.deepEqual(
     packageEntry.packageArguments.map((argument) => argument.value ?? argument.valueHint),
     ['mcp', '--mode', 'mode']
@@ -225,6 +225,7 @@ test('context MCP mode exposes exactly three tools with the transaction contract
     assert.deepEqual(toolNames, ['get_financial_context', 'get_transactions', 'verify_key']);
 
     const transactionTool = listed.tools.find((tool) => tool.name === 'get_transactions');
+    assert.ok(listed.tools.every((tool) => tool.outputSchema));
     assert.match(transactionTool.description, /YYYY-MM/);
     assert.match(transactionTool.description, /10 days/);
     assert.match(transactionTool.description, /bare call/);
@@ -236,10 +237,26 @@ test('context MCP mode exposes exactly three tools with the transaction contract
   }
 });
 
+test('verify_key structured content matches its advertised output schema', async () => {
+  const { client, server } = await createConnectedMcpServer();
+  try {
+    const result = await client.callTool({ name: 'verify_key', arguments: {} });
+    assert.deepEqual(result.structuredContent, {
+      audience: 'context',
+      status: 'ok',
+      valid: true,
+    });
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test('MCP modes expose separate three-tool surfaces with mode-specific annotations', async () => {
   const { client, server } = await createConnectedMcpServer(() => sampleContext, 'automation');
   try {
     const listed = await client.listTools();
+    assert.ok(listed.tools.every((tool) => tool.outputSchema));
     assert.deepEqual(
       listed.tools.map((tool) => tool.name).sort(),
       ['describe_operation', 'invoke_operation', 'search_operations']
@@ -391,7 +408,8 @@ test('tool handler failures become structured MCP error results', async () => {
   try {
     const result = await client.callTool({ name: 'search_operations', arguments: {} });
     assert.equal(result.isError, true);
-    assert.match(result.structuredContent.error.message, /requires an automation API key/);
+    assert.equal(result.structuredContent, undefined);
+    assert.match(JSON.parse(result.content[0].text).error.message, /requires an automation API key/);
   } finally {
     await client.close();
     await server.close();
@@ -418,7 +436,8 @@ test('failed automation operations preserve their status and body as an MCP erro
       arguments: { operation_id: 'pay_bill', input: { body: { amount: 20 } } },
     });
     assert.equal(result.isError, true);
-    assert.deepEqual(result.structuredContent, {
+    assert.equal(result.structuredContent, undefined);
+    assert.deepEqual(JSON.parse(result.content[0].text), {
       body: failure,
       headers: {},
       operation_id: 'pay_bill',
@@ -450,11 +469,13 @@ test('API failures become structured MCP error results with status, body, and he
   try {
     const result = await client.callTool({ name: 'get_financial_context', arguments: {} });
     assert.equal(result.isError, true);
-    assert.equal(result.structuredContent.status, 503);
-    assert.deepEqual(result.structuredContent.body, {
+    assert.equal(result.structuredContent, undefined);
+    const error = JSON.parse(result.content[0].text);
+    assert.equal(error.status, 503);
+    assert.deepEqual(error.body, {
       error: 'Financial context is temporarily unavailable.',
     });
-    assert.equal(result.structuredContent.headers['retry-after'], '5');
+    assert.equal(error.headers['retry-after'], '5');
   } finally {
     await client.close();
     await server.close();
@@ -527,6 +548,10 @@ test('MCP get_transactions defaults a bare call to latest and rejects mutual exc
         arguments: { month: '2026-07', latest: true },
       }),
       /mutually exclusive/
+    );
+    await assert.rejects(
+      client.callTool({ name: 'get_transactions', arguments: { latest: false } }),
+      /Invalid arguments/
     );
   } finally {
     await client.close();

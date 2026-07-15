@@ -1,6 +1,6 @@
 {
   "name": "@warmio/mcp",
-  "version": "7.0.1",
+  "version": "8.0.0",
   "mcpName": "io.github.jasonstockman/warmio",
   "description": "Warm CLI and compact context or automation MCP server",
   "type": "module",
@@ -25,6 +25,10 @@
     "./install": {
       "types": "./dist/install.d.ts",
       "default": "./dist/install.js"
+    },
+    "./manifest": {
+      "types": "./dist/manifest.d.ts",
+      "default": "./dist/manifest.js"
     }
   },
   "bin": {
@@ -52,7 +56,12 @@
     "chatgpt"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jasonstockman/warm-mcp.git"
+  },
   "dependencies": {
+    "@warmio/contracts": "1.0.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "dotenv": "^17.2.3",
     "zod": "^3.25.76"
