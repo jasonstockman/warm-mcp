@@ -4,6 +4,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      version:
+        description: Exact @warmio/mcp version to publish
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,5 +25,33 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
       - run: npm ci
+      - name: Require the requested exact package version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: node -e "const pkg=require('./package.json'); if (pkg.version !== process.env.REQUESTED_VERSION) throw new Error('Requested version must exactly match package.json');"
       - run: npm test
+      - name: Inspect package contents
+        run: npm pack --dry-run
       - run: npm publish --access public
+      - name: Verify registry readback
+        run: |
+          package_name="$(node -p \"require('./package.json').name\")"
+          package_version="$(node -p \"require('./package.json').version\")"
+          metadata="$(npm view \"$package_name@$package_version\" name version dist.integrity --json)"
+          source_commit="$(git rev-parse HEAD)"
+          package_digest="sha256:$(shasum -a 256 package.json | awk '{print $1}')"
+          METADATA="$metadata" PACKAGE_NAME="$package_name" PACKAGE_VERSION="$package_version" node -e '
+            const metadata = JSON.parse(process.env.METADATA);
+            if (metadata.name !== process.env.PACKAGE_NAME || metadata.version !== process.env.PACKAGE_VERSION || !metadata.dist?.integrity) {
+              throw new Error("Registry readback did not return the published package, version, and integrity.");
+            }
+          '
+          integrity="$(METADATA="$metadata" node -p 'JSON.parse(process.env.METADATA).dist.integrity')"
+          {
+            echo "## MCP release readback"
+            echo "- package: $package_name@$package_version"
+            echo "- integrity: $integrity"
+            echo "- source commit: $source_commit"
+            echo "- package metadata digest: $package_digest"
+          } >> "$GITHUB_STEP_SUMMARY"
