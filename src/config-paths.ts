@@ -2,6 +2,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+export type WarmApiAudience = 'automation' | 'context';
+
 export function getWarmConfigDir(): string {
   if (process.env.WARM_CONFIG_DIR?.trim()) {
     return process.env.WARM_CONFIG_DIR.trim();
@@ -22,12 +24,15 @@ export function getWarmConfigDir(): string {
   return path.join(os.homedir(), '.config', 'warm');
 }
 
-export function getWarmApiKeyPath(): string {
-  if (process.env.WARM_API_KEY_FILE?.trim()) {
-    return process.env.WARM_API_KEY_FILE.trim();
+export function getWarmApiKeyPath(audience: WarmApiAudience = 'context'): string {
+  const envKey =
+    audience === 'automation' ? 'WARM_AUTOMATION_API_KEY_FILE' : 'WARM_CONTEXT_API_KEY_FILE';
+  const configuredPath = process.env[envKey]?.trim();
+  if (configuredPath) {
+    return configuredPath;
   }
 
-  return path.join(getWarmConfigDir(), 'api_key');
+  return path.join(getWarmConfigDir(), `${audience}_api_key`);
 }
 
 export function readConfigFile(configPath: string): string | null {

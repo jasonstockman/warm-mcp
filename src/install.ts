@@ -1,16 +1,17 @@
 import { createInterface } from 'readline';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { homedir, platform } from 'os';
 
-import { verifyWarmApiKey } from './server.js';
-import { getWarmApiKeyPath, readConfigFile } from './config-paths.js';
+import { verifyWarmApiKey, WarmApiError } from './server.js';
+import { getWarmApiKeyPath, readConfigFile, type WarmApiAudience } from './config-paths.js';
 
 const HOME = homedir();
 const CWD = process.cwd();
 
 export interface InstallOptions {
   force?: boolean;
+  mode?: WarmApiAudience;
   validateApiKey?: boolean;
 }
 
@@ -25,10 +26,17 @@ interface Client {
 type ClientSetupState = 'configured' | 'missing' | 'needs_setup';
 
 interface ClientStatus {
+  apiKeyFileOverride: string | null;
   client: Client;
-  hasApiKeyFileOverride: boolean;
+  credentialApiKey: string | null;
   inlineApiKey: string | null;
   state: ClientSetupState;
+}
+
+interface ClientEnvStatus {
+  apiKeyFileOverride: string | null;
+  hasIrrelevantCredential: boolean;
+  inlineApiKey: string | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -82,14 +90,16 @@ const GLOBAL_CLIENTS: Client[] = [
 const PROJECT_CONFIGS = ['.mcp.json', '.cursor/mcp.json', '.vscode/mcp.json'];
 const MCP_PACKAGE_SPEC = '@warmio/mcp@latest';
 
-const MCP_CONFIG =
-  platform() === 'win32'
-    ? { command: 'cmd', args: ['/c', 'npx', '-y', MCP_PACKAGE_SPEC, 'mcp'] }
-    : { command: 'npx', args: ['-y', MCP_PACKAGE_SPEC, 'mcp'] };
+function getServerName(mode: WarmApiAudience): string {
+  return mode === 'automation' ? 'warm-automation' : 'warm';
+}
 
-const WARM_API_KEY_PATH = getWarmApiKeyPath();
-const WARM_TOML_BLOCK_PATTERN = /\n?\[mcp_servers\.warm\][\s\S]*?(?=\n\[[^\n]+\]|\s*$)/g;
-const WARM_TOML_ENV_BLOCK_PATTERN = /\n?\[mcp_servers\.warm\.env\][\s\S]*?(?=\n\[[^\n]+\]|\s*$)/g;
+function getMcpConfig(mode: WarmApiAudience) {
+  const args = ['-y', MCP_PACKAGE_SPEC, 'mcp', '--mode', mode];
+  return platform() === 'win32'
+    ? { command: 'cmd', args: ['/c', 'npx', ...args] }
+    : { command: 'npx', args };
+}
 
 function detectProjectClients(): Client[] {
   const found: Client[] = [];
@@ -127,52 +137,106 @@ function isWarmPackageSpecifier(value: string): boolean {
   return /^@warmio\/mcp(?:@.+)?$/.test(value);
 }
 
-function isSupportedWarmInvocation(command: string | undefined, args: string[]): boolean {
+function isSupportedWarmInvocation(
+  command: string | undefined,
+  args: string[],
+  mode: WarmApiAudience
+): boolean {
   if (command !== 'npx' && command !== 'cmd') {
     return false;
   }
 
-  return args.some((value) => isWarmPackageSpecifier(value)) && args.includes('mcp');
+  return (
+    args.some((value) => isWarmPackageSpecifier(value)) &&
+    args.includes('mcp') &&
+    args.includes('--mode') &&
+    args.includes(mode)
+  );
 }
 
-function getJsonEnvStatus(server: Record<string, unknown> | undefined): {
-  hasApiKeyFileOverride: boolean;
-  inlineApiKey: string | null;
-} {
+function getJsonEnvStatus(
+  server: Record<string, unknown> | undefined,
+  mode: WarmApiAudience
+): ClientEnvStatus {
   const env = isRecord(server?.env) ? server.env : undefined;
+  const apiKeyName = mode === 'automation' ? 'WARM_AUTOMATION_API_KEY' : 'WARM_CONTEXT_API_KEY';
+  const apiKeyFileName = `${apiKeyName}_FILE`;
+  const oppositeApiKeyName =
+    mode === 'automation' ? 'WARM_CONTEXT_API_KEY' : 'WARM_AUTOMATION_API_KEY';
   const inlineApiKey =
-    typeof env?.WARM_API_KEY === 'string' && env.WARM_API_KEY.trim()
-      ? env.WARM_API_KEY.trim()
+    typeof env?.[apiKeyName] === 'string' && env[apiKeyName].trim()
+      ? env[apiKeyName].trim()
       : null;
 
   return {
-    hasApiKeyFileOverride:
-      typeof env?.WARM_API_KEY_FILE === 'string' && env.WARM_API_KEY_FILE.trim().length > 0,
+    apiKeyFileOverride:
+      typeof env?.[apiKeyFileName] === 'string' && env[apiKeyFileName].trim().length > 0
+        ? env[apiKeyFileName].trim()
+        : null,
+    hasIrrelevantCredential: ['WARM_API_KEY', 'WARM_API_KEY_FILE', oppositeApiKeyName, `${oppositeApiKeyName}_FILE`]
+      .some((name) => typeof env?.[name] === 'string' && env[name].trim().length > 0),
     inlineApiKey,
   };
 }
 
-function getJsonStatus(client: Client, content: string): ClientStatus {
+function resolveApiKeyFileOverride(filePath: string): string {
+  if (filePath === '~') {
+    return HOME;
+  }
+  if (filePath.startsWith('~/')) {
+    return join(HOME, filePath.slice(2));
+  }
+  return resolve(filePath);
+}
+
+function createClientStatus(
+  client: Client,
+  invocationState: ClientSetupState,
+  envStatus: ClientEnvStatus,
+  mode: WarmApiAudience
+): ClientStatus {
+  const credentialApiKey =
+    envStatus.inlineApiKey ||
+    (envStatus.apiKeyFileOverride
+      ? readConfigFile(resolveApiKeyFileOverride(envStatus.apiKeyFileOverride))
+      : readConfigFile(getWarmApiKeyPath(mode)));
+  const state =
+    invocationState === 'configured' && credentialApiKey && !envStatus.hasIrrelevantCredential
+      ? 'configured'
+      : invocationState === 'missing'
+        ? 'missing'
+        : 'needs_setup';
+
+  return { client, credentialApiKey, state, ...envStatus };
+}
+
+function getJsonStatus(client: Client, content: string, mode: WarmApiAudience): ClientStatus {
   try {
     const parsed = JSON.parse(content) as Record<string, unknown>;
     const servers = isRecord(parsed.mcpServers) ? parsed.mcpServers : undefined;
-    const server = isRecord(servers?.warm) ? servers.warm : undefined;
-    const envStatus = getJsonEnvStatus(server);
+    const candidate = servers?.[getServerName(mode)];
+    const server = isRecord(candidate) ? candidate : undefined;
+    const envStatus = getJsonEnvStatus(server, mode);
 
     if (!server) {
-      return { client, state: 'missing', ...envStatus };
+      return createClientStatus(client, 'missing', envStatus, mode);
     }
 
     const command = typeof server.command === 'string' ? server.command : undefined;
     const args = getStringArray(server.args);
 
-    if (isSupportedWarmInvocation(command, args)) {
-      return { client, state: 'configured', ...envStatus };
+    if (isSupportedWarmInvocation(command, args, mode)) {
+      return createClientStatus(client, 'configured', envStatus, mode);
     }
 
-    return { client, state: 'needs_setup', ...envStatus };
+    return createClientStatus(client, 'needs_setup', envStatus, mode);
   } catch {
-    return { client, state: 'missing', hasApiKeyFileOverride: false, inlineApiKey: null };
+    return createClientStatus(
+      client,
+      'missing',
+      { apiKeyFileOverride: null, hasIrrelevantCredential: false, inlineApiKey: null },
+      mode
+    );
   }
 }
 
@@ -182,11 +246,11 @@ function escapeRegExp(value: string): string {
 
 function getTomlSection(content: string, sectionName: string): string | null {
   const pattern = new RegExp(
-    `(?:^|\\n)\\[${escapeRegExp(sectionName)}\\]\\n([\\s\\S]*?)(?=\\n\\[[^\\n]+\\]|\\s*$)`
+    `(?:^|\\r?\\n)\\[${escapeRegExp(sectionName)}\\]\\r?\\n([\\s\\S]*?)(?=\\r?\\n\\[[^\\r\\n]+\\]|\\s*$)`
   );
   const match = content.match(pattern);
 
-  return match ? match[0].replace(/^\n/, '') : null;
+  return match ? match[0].replace(/^\r?\n/, '') : null;
 }
 
 function getTomlStringValue(block: string | null, key: string): string | undefined {
@@ -221,75 +285,109 @@ function getTomlStringArrayValue(block: string | null, key: string): string[] {
   return values;
 }
 
-function getTomlEnvStatus(content: string): {
+function getTomlEnvStatus(content: string, mode: WarmApiAudience): {
   envLines: string[];
-  hasApiKeyFileOverride: boolean;
-  inlineApiKey: string | null;
-} {
-  const envBlock = getTomlSection(content, 'mcp_servers.warm.env');
+} & ClientEnvStatus {
+  const envBlock = getTomlSection(content, `mcp_servers.${getServerName(mode)}.env`);
   if (!envBlock) {
-    return { envLines: [], hasApiKeyFileOverride: false, inlineApiKey: null };
+    return {
+      apiKeyFileOverride: null,
+      envLines: [],
+      hasIrrelevantCredential: false,
+      inlineApiKey: null,
+    };
   }
 
-  const envLines = envBlock.split('\n').slice(1).filter((line) => line.trim().length > 0);
-  const inlineApiKey = getTomlStringValue(envBlock, 'WARM_API_KEY')?.trim() || null;
-  const apiKeyFile = getTomlStringValue(envBlock, 'WARM_API_KEY_FILE');
+  const envLines = envBlock.split(/\r?\n/).slice(1).filter((line) => line.trim().length > 0);
+  const apiKeyName = mode === 'automation' ? 'WARM_AUTOMATION_API_KEY' : 'WARM_CONTEXT_API_KEY';
+  const oppositeApiKeyName =
+    mode === 'automation' ? 'WARM_CONTEXT_API_KEY' : 'WARM_AUTOMATION_API_KEY';
+  const inlineApiKey = getTomlStringValue(envBlock, apiKeyName)?.trim() || null;
+  const apiKeyFile = getTomlStringValue(envBlock, `${apiKeyName}_FILE`);
 
   return {
+    apiKeyFileOverride: typeof apiKeyFile === 'string' && apiKeyFile.trim() ? apiKeyFile.trim() : null,
     envLines,
-    hasApiKeyFileOverride: typeof apiKeyFile === 'string' && apiKeyFile.trim().length > 0,
+    hasIrrelevantCredential: [
+      'WARM_API_KEY',
+      'WARM_API_KEY_FILE',
+      oppositeApiKeyName,
+      `${oppositeApiKeyName}_FILE`,
+    ].some((name) => Boolean(getTomlStringValue(envBlock, name)?.trim())),
     inlineApiKey,
   };
 }
 
-function getTomlStatus(client: Client, content: string): ClientStatus {
-  const warmBlock = getTomlSection(content, 'mcp_servers.warm');
-  const envStatus = getTomlEnvStatus(content);
+function getTomlStatus(client: Client, content: string, mode: WarmApiAudience): ClientStatus {
+  const warmBlock = getTomlSection(content, `mcp_servers.${getServerName(mode)}`);
+  const envStatus = getTomlEnvStatus(content, mode);
 
   if (!warmBlock) {
-    return { client, state: 'missing', ...envStatus };
+    return createClientStatus(client, 'missing', envStatus, mode);
   }
 
   const command = getTomlStringValue(warmBlock, 'command');
   const args = getTomlStringArrayValue(warmBlock, 'args');
 
-  if (isSupportedWarmInvocation(command, args)) {
-    return { client, state: 'configured', ...envStatus };
+  if (isSupportedWarmInvocation(command, args, mode)) {
+    return createClientStatus(client, 'configured', envStatus, mode);
   }
 
-  return { client, state: 'needs_setup', ...envStatus };
+  return createClientStatus(client, 'needs_setup', envStatus, mode);
 }
 
-function getClientStatus(client: Client): ClientStatus {
+function getClientStatus(client: Client, mode: WarmApiAudience): ClientStatus {
   if (!existsSync(client.configPath)) {
-    return { client, state: 'missing', hasApiKeyFileOverride: false, inlineApiKey: null };
+    return createClientStatus(
+      client,
+      'missing',
+      { apiKeyFileOverride: null, hasIrrelevantCredential: false, inlineApiKey: null },
+      mode
+    );
   }
 
   const content = readFileSync(client.configPath, 'utf-8');
 
   if (client.format === 'toml') {
-    return getTomlStatus(client, content);
+    return getTomlStatus(client, content, mode);
   }
 
-  return getJsonStatus(client, content);
+  return getJsonStatus(client, content, mode);
 }
 
-function configureJson(client: Client): void {
+function configureJson(
+  client: Client,
+  mode: WarmApiAudience,
+  preserveSelectedKeyFile: boolean
+): void {
   let config: Record<string, unknown> = {};
   if (existsSync(client.configPath)) {
+    const content = readFileSync(client.configPath, 'utf-8');
+    let parsed: unknown;
     try {
-      config = JSON.parse(readFileSync(client.configPath, 'utf-8'));
-    } catch {
-      // Start from an empty config if the existing file is invalid.
+      parsed = JSON.parse(content);
+    } catch (error) {
+      throw new Error(
+        `Refusing to overwrite unparsable JSON config ${client.configPath}: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
+    if (!isRecord(parsed)) {
+      throw new Error(`Refusing to overwrite JSON config ${client.configPath}: root must be an object.`);
+    }
+    config = parsed;
   }
 
-  if (!config.mcpServers) {
+  if (config.mcpServers === undefined) {
     config.mcpServers = {};
   }
-
-  const servers = config.mcpServers as Record<string, unknown>;
-  const existing = isRecord(servers.warm) ? servers.warm : undefined;
+  const servers = config.mcpServers;
+  if (!isRecord(servers)) {
+    throw new Error(
+      `Refusing to overwrite JSON config ${client.configPath}: mcpServers must be an object.`
+    );
+  }
+  const serverName = getServerName(mode);
+  const existing = isRecord(servers[serverName]) ? servers[serverName] : undefined;
   const existingEnv = isRecord(existing?.env) ? existing.env : {};
   const nextEnv = { ...existingEnv } as Record<string, unknown>;
   const existingCommand = typeof existing?.command === 'string' ? existing.command : undefined;
@@ -297,20 +395,35 @@ function configureJson(client: Client): void {
   const preserveProjectCommand =
     client.isProjectLevel &&
     !!existingCommand &&
-    isSupportedWarmInvocation(existingCommand, existingArgs);
+    isSupportedWarmInvocation(existingCommand, existingArgs, mode);
 
-  delete nextEnv.WARM_API_KEY;
+  const selectedKeyFile =
+    mode === 'automation' ? 'WARM_AUTOMATION_API_KEY_FILE' : 'WARM_CONTEXT_API_KEY_FILE';
+  const oppositeKeyFile =
+    mode === 'automation' ? 'WARM_CONTEXT_API_KEY_FILE' : 'WARM_AUTOMATION_API_KEY_FILE';
+  for (const name of [
+    'WARM_API_KEY',
+    'WARM_API_KEY_FILE',
+    'WARM_CONTEXT_API_KEY',
+    'WARM_AUTOMATION_API_KEY',
+    oppositeKeyFile,
+  ]) {
+    delete nextEnv[name];
+  }
+  if (!preserveSelectedKeyFile) {
+    delete nextEnv[selectedKeyFile];
+  }
 
   if (preserveProjectCommand) {
-    servers.warm = {
+    servers[serverName] = {
       ...existing,
-      ...(Object.keys(nextEnv).length > 0 ? { env: nextEnv } : {}),
+      env: Object.keys(nextEnv).length > 0 ? nextEnv : undefined,
     };
   } else {
-    servers.warm = {
+    servers[serverName] = {
       ...existing,
-      ...MCP_CONFIG,
-      ...(Object.keys(nextEnv).length > 0 ? { env: nextEnv } : {}),
+      ...getMcpConfig(mode),
+      env: Object.keys(nextEnv).length > 0 ? nextEnv : undefined,
     };
   }
 
@@ -318,47 +431,83 @@ function configureJson(client: Client): void {
   writeFileSync(client.configPath, JSON.stringify(config, null, 2) + '\n');
 }
 
-function configureToml(client: Client): void {
+function configureToml(
+  client: Client,
+  mode: WarmApiAudience,
+  preserveSelectedKeyFile: boolean
+): void {
   let content = '';
+  let lineEnding = '\n';
   if (existsSync(client.configPath)) {
     content = readFileSync(client.configPath, 'utf-8');
+    lineEnding = content.includes('\r\n') ? '\r\n' : '\n';
     if (!content.endsWith('\n')) {
-      content += '\n';
+      content += lineEnding;
     }
   }
 
+  const serverName = getServerName(mode);
   const tomlCommand = platform() === 'win32' ? 'cmd' : 'npx';
   const tomlArgs =
     platform() === 'win32'
-      ? `["/c", "npx", "-y", "${MCP_PACKAGE_SPEC}", "mcp"]`
-      : `["-y", "${MCP_PACKAGE_SPEC}", "mcp"]`;
-  const warmBlock = `[mcp_servers.warm]\ncommand = "${tomlCommand}"\nargs = ${tomlArgs}\n`;
-  const preservedEnvLines = getTomlEnvStatus(content).envLines.filter(
-    (line) => !/^\s*WARM_API_KEY\s*=/.test(line)
+      ? `["/c", "npx", "-y", "${MCP_PACKAGE_SPEC}", "mcp", "--mode", "${mode}"]`
+      : `["-y", "${MCP_PACKAGE_SPEC}", "mcp", "--mode", "${mode}"]`;
+  const warmBlock = `[mcp_servers.${serverName}]${lineEnding}command = "${tomlCommand}"${lineEnding}args = ${tomlArgs}${lineEnding}`;
+  const selectedKeyFile =
+    mode === 'automation' ? 'WARM_AUTOMATION_API_KEY_FILE' : 'WARM_CONTEXT_API_KEY_FILE';
+  const oppositeKeyFile =
+    mode === 'automation' ? 'WARM_CONTEXT_API_KEY_FILE' : 'WARM_AUTOMATION_API_KEY_FILE';
+  const removedEnvNames = new Set([
+    'WARM_API_KEY',
+    'WARM_API_KEY_FILE',
+    'WARM_CONTEXT_API_KEY',
+    'WARM_AUTOMATION_API_KEY',
+    oppositeKeyFile,
+    ...(!preserveSelectedKeyFile ? [selectedKeyFile] : []),
+  ]);
+  const preservedEnvLines = getTomlEnvStatus(content, mode).envLines.filter((line) => {
+    const name = line.match(/^\s*([A-Z0-9_]+)\s*=/)?.[1];
+    return !name || !removedEnvNames.has(name);
+  });
+  const escapedServerName = escapeRegExp(serverName);
+  const tomlBlockPattern = new RegExp(
+    `(?:\\r?\\n)?\\[mcp_servers\\.${escapedServerName}\\]\\r?\\n[\\s\\S]*?(?=\\r?\\n\\[[^\\r\\n]+\\]|\\s*$)`,
+    'g'
+  );
+  const tomlEnvBlockPattern = new RegExp(
+    `(?:\\r?\\n)?\\[mcp_servers\\.${escapedServerName}\\.env\\]\\r?\\n[\\s\\S]*?(?=\\r?\\n\\[[^\\r\\n]+\\]|\\s*$)`,
+    'g'
   );
   let nextContent = content
-    .replace(WARM_TOML_ENV_BLOCK_PATTERN, '')
-    .replace(WARM_TOML_BLOCK_PATTERN, '')
+    .replace(tomlEnvBlockPattern, '')
+    .replace(tomlBlockPattern, '')
     .trimEnd();
   if (nextContent.length > 0) {
-    nextContent += '\n\n';
+    nextContent += `${lineEnding}${lineEnding}`;
   }
   nextContent += warmBlock;
   if (preservedEnvLines.length > 0) {
-    nextContent += `\n[mcp_servers.warm.env]\n${preservedEnvLines.join('\n')}\n`;
+    nextContent += `${lineEnding}[mcp_servers.${serverName}.env]${lineEnding}${preservedEnvLines.join(lineEnding)}${lineEnding}`;
   }
 
   mkdirSync(dirname(client.configPath), { recursive: true });
-  writeFileSync(client.configPath, nextContent.endsWith('\n') ? nextContent : `${nextContent}\n`);
+  writeFileSync(
+    client.configPath,
+    nextContent.endsWith('\n') ? nextContent : `${nextContent}${lineEnding}`
+  );
 }
 
-function configure(client: Client): void {
+function configure(
+  client: Client,
+  mode: WarmApiAudience,
+  preserveSelectedKeyFile: boolean
+): void {
   if (client.format === 'json') {
-    configureJson(client);
+    configureJson(client, mode, preserveSelectedKeyFile);
     return;
   }
 
-  configureToml(client);
+  configureToml(client, mode, preserveSelectedKeyFile);
 }
 
 function shortPath(filePath: string): string {
@@ -375,22 +524,20 @@ function prompt(question: string): Promise<string> {
   });
 }
 
-function isBlockingValidationError(message: string): boolean {
-  const normalized = message.toLowerCase();
-  return (
-    normalized.includes('invalid or expired api key') ||
-    normalized.includes('pro subscription required')
-  );
-}
-
-async function validateApiKey(apiKey: string): Promise<boolean> {
+async function validateApiKey(apiKey: string, mode: WarmApiAudience): Promise<boolean> {
   console.log('  Validating API key...');
 
   try {
-    const result = await verifyWarmApiKey(apiKey);
+    const result = await verifyWarmApiKey(apiKey, mode);
     if (!result.valid) {
       console.log(`  Validation failed: ${result.status}`);
       console.log('  Check https://warm.io/settings and try again.');
+      console.log('');
+      return false;
+    }
+    if (result.audience !== mode) {
+      console.log(`  Validation failed: this installer mode requires a ${mode} API key.`);
+      console.log(`  Create a ${mode} key in https://warm.io/settings and try again.`);
       console.log('');
       return false;
     }
@@ -401,7 +548,7 @@ async function validateApiKey(apiKey: string): Promise<boolean> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
 
-    if (isBlockingValidationError(message)) {
+    if (error instanceof WarmApiError && (error.status === 401 || error.status === 403)) {
       console.log(`  Validation failed: ${message}`);
       console.log('');
       return false;
@@ -414,9 +561,23 @@ async function validateApiKey(apiKey: string): Promise<boolean> {
   }
 }
 
-function storeApiKey(apiKey: string): void {
-  mkdirSync(dirname(WARM_API_KEY_PATH), { recursive: true });
-  writeFileSync(WARM_API_KEY_PATH, `${apiKey}\n`, { mode: 0o600 });
+async function validateEffectiveApiKeys(
+  apiKeys: Array<string | null | undefined>,
+  mode: WarmApiAudience
+): Promise<void> {
+  const uniqueApiKeys = [...new Set(apiKeys.filter((apiKey): apiKey is string => Boolean(apiKey)))];
+  for (const apiKey of uniqueApiKeys) {
+    if (!(await validateApiKey(apiKey, mode))) {
+      throw new Error(`The ${mode} API key could not be validated.`);
+    }
+  }
+}
+
+function storeApiKey(apiKey: string, mode: WarmApiAudience): void {
+  const apiKeyPath = getWarmApiKeyPath(mode);
+  mkdirSync(dirname(apiKeyPath), { recursive: true });
+  writeFileSync(apiKeyPath, `${apiKey}\n`, { mode: 0o600 });
+  chmodSync(apiKeyPath, 0o600);
 }
 
 function getStatusLabel(status: ClientSetupState, force: boolean): string {
@@ -437,6 +598,7 @@ function getStatusLabel(status: ClientSetupState, force: boolean): string {
 
 export async function install(options: InstallOptions = {}): Promise<void> {
   const force = options.force ?? false;
+  const mode = options.mode ?? 'context';
   const shouldValidateApiKey = options.validateApiKey ?? true;
 
   console.log('');
@@ -447,7 +609,7 @@ export async function install(options: InstallOptions = {}): Promise<void> {
   const globalClients = GLOBAL_CLIENTS.filter(isDetected);
   const projectClients = detectProjectClients();
   const allClients = [...globalClients, ...projectClients];
-  const clientStatuses = allClients.map(getClientStatus);
+  const clientStatuses = allClients.map((client) => getClientStatus(client, mode));
   const needsSetup = clientStatuses.filter((status) => force || status.state !== 'configured');
 
   console.log('  MCP clients found:');
@@ -459,17 +621,27 @@ export async function install(options: InstallOptions = {}): Promise<void> {
   console.log('');
 
   if (needsSetup.length === 0) {
+    if (shouldValidateApiKey) {
+      await validateEffectiveApiKeys(
+        clientStatuses.map((status) => status.credentialApiKey),
+        mode
+      );
+    }
     console.log('  All clients already configured!');
     console.log('  Run with --force to update the API key.');
     console.log('');
     return;
   }
 
-  const storedApiKey = readConfigFile(WARM_API_KEY_PATH);
+  const apiKeyPath = getWarmApiKeyPath(mode);
+  const storedApiKey = readConfigFile(apiKeyPath);
   const migratedApiKey =
     needsSetup.find((status) => typeof status.inlineApiKey === 'string' && status.inlineApiKey.length > 0)
       ?.inlineApiKey ?? null;
-  const hasApiKeyFileOverride = needsSetup.some((status) => status.hasApiKeyFileOverride);
+  const usableApiKeyFileOverride = needsSetup.find(
+    (status) => status.apiKeyFileOverride && !status.inlineApiKey && status.credentialApiKey
+  );
+  const targetMissingCredential = needsSetup.some((status) => !status.credentialApiKey);
 
   let apiKeyToStore: string | null = null;
   let shouldStoreApiKey = false;
@@ -485,8 +657,10 @@ export async function install(options: InstallOptions = {}): Promise<void> {
       console.log('');
       apiKeyToStore = migratedApiKey;
       shouldStoreApiKey = true;
-    } else if (hasApiKeyFileOverride) {
-      console.log('  Reusing existing WARM_API_KEY_FILE override.');
+    } else if (usableApiKeyFileOverride && !targetMissingCredential) {
+      console.log(
+        `  Reusing existing ${mode === 'automation' ? 'WARM_AUTOMATION_API_KEY_FILE' : 'WARM_CONTEXT_API_KEY_FILE'} override.`
+      );
       console.log('');
     } else {
       shouldPromptForApiKey = true;
@@ -499,40 +673,55 @@ export async function install(options: InstallOptions = {}): Promise<void> {
       console.log('');
       console.log('  No key provided. Get one at https://warm.io/settings');
       console.log('');
-      return;
+      throw new Error(`A ${mode} API key is required to complete setup.`);
     }
 
     apiKeyToStore = apiKey;
     shouldStoreApiKey = true;
   }
 
-  if (apiKeyToStore && shouldValidateApiKey && (shouldStoreApiKey || force)) {
-    const isValid = await validateApiKey(apiKeyToStore);
-    if (!isValid) {
-      return;
-    }
+  if (shouldValidateApiKey) {
+    const retainedClientApiKeys = force
+      ? []
+      : clientStatuses
+          .filter(
+            (status) =>
+              status.state === 'configured' ||
+              Boolean(status.apiKeyFileOverride && status.credentialApiKey)
+          )
+          .map((status) => status.credentialApiKey);
+    await validateEffectiveApiKeys([apiKeyToStore, ...retainedClientApiKeys], mode);
   }
 
   if (apiKeyToStore && shouldStoreApiKey) {
-    storeApiKey(apiKeyToStore);
+    storeApiKey(apiKeyToStore, mode);
   }
 
   console.log('  Configuring...');
   console.log('');
 
+  const configurationFailures: string[] = [];
   needsSetup.forEach((status) => {
     try {
-      configure(status.client);
+      configure(
+        status.client,
+        mode,
+        !force && Boolean(status.apiKeyFileOverride && status.credentialApiKey)
+      );
       console.log(`    ${status.client.name.padEnd(22)} done`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.log(`    ${status.client.name.padEnd(22)} failed: ${message}`);
+      configurationFailures.push(`${status.client.name}: ${message}`);
     }
   });
 
   console.log('');
+  if (configurationFailures.length > 0) {
+    throw new Error(`Failed to configure MCP clients: ${configurationFailures.join('; ')}`);
+  }
   if (apiKeyToStore) {
-    console.log(`  Stored API key at ${shortPath(WARM_API_KEY_PATH)}`);
+    console.log(`  Stored ${mode} API key at ${shortPath(apiKeyPath)}`);
   }
   console.log('  All set! Restart your MCP clients and try:');
   console.log('    "What\'s my net worth?"');
