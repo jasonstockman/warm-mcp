@@ -42,5 +42,5 @@ export type {
   WarmApiClient,
   WarmApiClientOptions,
 } from './warm-api-client.js';
-export type { WarmApiAudience } from './config-paths.js';
+export type { PrivateMcpMode } from '@warmio/contracts/mcp';
 export type { WarmServerOptions } from './server.js';
