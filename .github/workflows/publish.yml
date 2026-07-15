@@ -31,12 +31,13 @@ jobs:
           REQUESTED_VERSION: ${{ inputs.version }}
         run: node -e "const pkg=require('./package.json'); if (pkg.version !== process.env.REQUESTED_VERSION) throw new Error('Requested version must exactly match package.json');"
       - name: Require the matching release tag
+        if: github.event_name == 'release'
         env:
-          PACKAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           package_version="$(node -p \"require('./package.json').version\")"
           expected_tag="v$package_version"
-          test "$PACKAGE_VERSION" = "$expected_tag"
+          test "$RELEASE_TAG" = "$expected_tag"
           git fetch --tags --force
           test "$(git tag --points-at HEAD --list "$expected_tag")" = "$expected_tag"
       - run: npm test
@@ -55,7 +56,7 @@ jobs:
           package_version="$(node -p \"require('./package.json').version\")"
           metadata=""
           for attempt in 1 2 3 4 5 6; do
-            metadata="$(npm view \"$package_name@$package_version\" name version dist.integrity --json 2>/dev/null || true)"
+            metadata="$(npm view \"$package_name@$package_version\" --json 2>/dev/null || true)"
             if METADATA="$metadata" PACKAGE_NAME="$package_name" PACKAGE_VERSION="$package_version" node -e '
               try {
                 const metadata = JSON.parse(process.env.METADATA);
