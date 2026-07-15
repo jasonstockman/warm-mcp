@@ -128,10 +128,14 @@ test('shared API origin defaults to app.warm.io while honoring WARM_API_URL', as
 
 test('server manifest describes the v7 mode selector and current credentials', () => {
   const manifest = JSON.parse(readFileSync(new URL('../server.json', import.meta.url), 'utf8'));
-  assert.equal(manifest.version, '7.0.0');
+  const packageManifest = JSON.parse(
+    readFileSync(new URL('../package.json', import.meta.url), 'utf8')
+  );
+  assert.equal(manifest.version, '7.0.1');
+  assert.equal(packageManifest.mcpName, manifest.name);
   assert.equal(manifest.packages.length, 1);
   const packageEntry = manifest.packages[0];
-  assert.equal(packageEntry.version, '7.0.0');
+  assert.equal(packageEntry.version, '7.0.1');
   assert.deepEqual(
     packageEntry.packageArguments.map((argument) => argument.value ?? argument.valueHint),
     ['mcp', '--mode', 'mode']

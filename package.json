@@ -1,6 +1,7 @@
 {
   "name": "@warmio/mcp",
-  "version": "7.0.0",
+  "version": "7.0.1",
+  "mcpName": "io.github.jasonstockman/warmio",
   "description": "Warm CLI and compact context or automation MCP server",
   "type": "module",
   "main": "dist/index.js",
