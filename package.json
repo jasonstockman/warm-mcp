@@ -60,7 +60,7 @@
     "url": "git+https://github.com/jasonstockman/warm-mcp.git"
   },
   "dependencies": {
-    "@warmio/contracts": "1.1.0",
+    "@warmio/contracts": "1.2.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "dotenv": "^17.2.3",
     "zod": "^3.25.76"
