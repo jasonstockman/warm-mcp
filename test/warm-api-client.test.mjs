@@ -134,7 +134,7 @@ test('shared API origin defaults to app.warm.io while honoring WARM_API_URL', as
   await client.getFinancialContext();
 });
 
-test('server manifest describes the v9 mode selector and current credentials', () => {
+test('server manifest describes the v10 mode selector and current credentials', () => {
   const manifest = JSON.parse(readFileSync(new URL('../server.json', import.meta.url), 'utf8'));
   const packageManifest = JSON.parse(
     readFileSync(new URL('../package.json', import.meta.url), 'utf8')
@@ -235,9 +235,9 @@ test('context MCP mode exposes exactly three tools with the transaction contract
     const transactionTool = listed.tools.find((tool) => tool.name === 'get_transactions');
     assert.ok(listed.tools.every((tool) => tool.outputSchema));
     assert.match(transactionTool.description, /YYYY-MM/);
-    assert.match(transactionTool.description, /10 days/);
-    assert.match(transactionTool.description, /bare call/);
-    assert.match(transactionTool.description, /mutually exclusive/);
+    assert.match(transactionTool.description, /10-day/);
+    assert.deepEqual(transactionTool.inputSchema.required, ['period']);
+    assert.deepEqual(Object.keys(transactionTool.inputSchema.properties), ['period']);
     assert.match(transactionTool.description, /outside the covered range return an error/);
   } finally {
     await client.close();
@@ -588,27 +588,36 @@ test('automation HTTP rejects requests without its independent transport bearer 
   }
 });
 
-test('MCP get_transactions defaults a bare call to latest and rejects mutual exclusion', async () => {
+test('MCP get_transactions maps one required period to the Warm API selector', async () => {
   const requests = [];
   const { client, server } = await createConnectedMcpServer((url) => {
     requests.push(`${url.pathname}${url.search}`);
-    return sampleLatest;
+    return url.searchParams.get('latest') === '1' ? sampleLatest : sampleMonth;
   });
 
   try {
-    const result = await client.callTool({ name: 'get_transactions', arguments: {} });
-    assert.deepEqual(result.structuredContent, sampleLatest);
-    assert.deepEqual(requests, ['/api/financial-context/transactions?latest=1']);
+    const latestResult = await client.callTool({
+      name: 'get_transactions',
+      arguments: { period: 'latest' },
+    });
+    assert.deepEqual(latestResult.structuredContent, sampleLatest);
+
+    const monthResult = await client.callTool({
+      name: 'get_transactions',
+      arguments: { period: '2026-07' },
+    });
+    assert.deepEqual(monthResult.structuredContent, sampleMonth);
+    assert.deepEqual(requests, [
+      '/api/financial-context/transactions?latest=1',
+      '/api/financial-context/transactions?month=2026-07',
+    ]);
 
     await assert.rejects(
-      client.callTool({
-        name: 'get_transactions',
-        arguments: { month: '2026-07', latest: true },
-      }),
-      /mutually exclusive/
+      client.callTool({ name: 'get_transactions', arguments: {} }),
+      /Invalid arguments/
     );
     await assert.rejects(
-      client.callTool({ name: 'get_transactions', arguments: { latest: false } }),
+      client.callTool({ name: 'get_transactions', arguments: { latest: true } }),
       /Invalid arguments/
     );
   } finally {

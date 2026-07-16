@@ -142,7 +142,11 @@ export function registerWarmTools(
     {
       ...getToolDefinition('get_transactions', 'context'),
       handler: async (args) => {
-        return await client.getTransactions(normalizeGetTransactionsMcpInput(args));
+        return await client.getTransactions(
+          normalizeGetTransactionsMcpInput(
+            args as Parameters<typeof normalizeGetTransactionsMcpInput>[0]
+          )
+        );
       },
     },
     {
