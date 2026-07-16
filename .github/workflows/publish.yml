@@ -35,7 +35,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          package_version="$(node -p \"require('./package.json').version\")"
+          package_version="$(node -p "require('./package.json').version")"
           expected_tag="v$package_version"
           test "$RELEASE_TAG" = "$expected_tag"
           git fetch --tags --force
@@ -52,11 +52,11 @@ jobs:
       - run: npm publish --access public
       - name: Verify registry readback
         run: |
-          package_name="$(node -p \"require('./package.json').name\")"
-          package_version="$(node -p \"require('./package.json').version\")"
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
           metadata=""
           for attempt in 1 2 3 4 5 6; do
-            metadata="$(npm view \"$package_name@$package_version\" --json 2>/dev/null || true)"
+            metadata="$(npm view "$package_name@$package_version" --json 2>/dev/null || true)"
             if METADATA="$metadata" PACKAGE_NAME="$package_name" PACKAGE_VERSION="$package_version" node -e '
               try {
                 const metadata = JSON.parse(process.env.METADATA);
