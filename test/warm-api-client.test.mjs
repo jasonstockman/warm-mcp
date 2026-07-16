@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -126,16 +134,16 @@ test('shared API origin defaults to app.warm.io while honoring WARM_API_URL', as
   await client.getFinancialContext();
 });
 
-test('server manifest describes the v8 mode selector and current credentials', () => {
+test('server manifest describes the v9 mode selector and current credentials', () => {
   const manifest = JSON.parse(readFileSync(new URL('../server.json', import.meta.url), 'utf8'));
   const packageManifest = JSON.parse(
     readFileSync(new URL('../package.json', import.meta.url), 'utf8')
   );
-  assert.equal(manifest.version, '8.0.0');
+  assert.equal(manifest.version, packageManifest.version);
   assert.equal(packageManifest.mcpName, manifest.name);
   assert.equal(manifest.packages.length, 1);
   const packageEntry = manifest.packages[0];
-  assert.equal(packageEntry.version, '8.0.0');
+  assert.equal(packageEntry.version, packageManifest.version);
   assert.deepEqual(
     packageEntry.packageArguments.map((argument) => argument.value ?? argument.valueHint),
     ['mcp', '--mode', 'mode']
@@ -257,12 +265,19 @@ test('MCP modes expose separate three-tool surfaces with mode-specific annotatio
   try {
     const listed = await client.listTools();
     assert.ok(listed.tools.every((tool) => tool.outputSchema));
-    assert.deepEqual(
-      listed.tools.map((tool) => tool.name).sort(),
-      ['describe_operation', 'invoke_operation', 'search_operations']
+    assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), [
+      'describe_operation',
+      'invoke_operation',
+      'search_operations',
+    ]);
+    assert.equal(
+      listed.tools.find((tool) => tool.name === 'search_operations').annotations.readOnlyHint,
+      true
     );
-    assert.equal(listed.tools.find((tool) => tool.name === 'search_operations').annotations.readOnlyHint, true);
-    assert.equal(listed.tools.find((tool) => tool.name === 'describe_operation').annotations.readOnlyHint, false);
+    assert.equal(
+      listed.tools.find((tool) => tool.name === 'describe_operation').annotations.readOnlyHint,
+      false
+    );
     const invoke = listed.tools.find((tool) => tool.name === 'invoke_operation');
     assert.equal(invoke.annotations.readOnlyHint, false);
     assert.equal(invoke.annotations.destructiveHint, true);
@@ -309,7 +324,12 @@ test('automation approval contract returns approval details and invokes with app
       assert.equal(url.pathname, '/api/automation/operations/invoke');
       assert.equal(body.approval_id, approval.id);
       assert.equal(body.confirmation_token, undefined);
-      return Response.json({ body: { ok: true }, headers: {}, operation_id: 'pay_bill', status: 200 });
+      return Response.json({
+        body: { ok: true },
+        headers: {},
+        operation_id: 'pay_bill',
+        status: 200,
+      });
     },
   });
 
@@ -409,7 +429,10 @@ test('tool handler failures become structured MCP error results', async () => {
     const result = await client.callTool({ name: 'search_operations', arguments: {} });
     assert.equal(result.isError, true);
     assert.equal(result.structuredContent, undefined);
-    assert.match(JSON.parse(result.content[0].text).error.message, /requires an automation API key/);
+    assert.match(
+      JSON.parse(result.content[0].text).error.message,
+      /requires an automation API key/
+    );
   } finally {
     await client.close();
     await server.close();
@@ -418,18 +441,15 @@ test('tool handler failures become structured MCP error results', async () => {
 
 test('failed automation operations preserve their status and body as an MCP error result', async () => {
   const failure = { error: 'Insufficient funds', code: 'insufficient_funds' };
-  const { client, server } = await createConnectedMcpServer(
-    (url) => {
-      assert.equal(url.pathname, '/api/automation/operations/invoke');
-      return {
-        body: failure,
-        headers: {},
-        operation_id: 'pay_bill',
-        status: 422,
-      };
-    },
-    'automation'
-  );
+  const { client, server } = await createConnectedMcpServer((url) => {
+    assert.equal(url.pathname, '/api/automation/operations/invoke');
+    return {
+      body: failure,
+      headers: {},
+      operation_id: 'pay_bill',
+      status: 422,
+    };
+  }, 'automation');
   try {
     const result = await client.callTool({
       name: 'invoke_operation',
@@ -504,7 +524,10 @@ test('mode-specific credential paths and HTTP transport security stay separate',
   assert.doesNotThrow(() =>
     validateHttpSecurity({ authToken: 'transport-only-token', host: '0.0.0.0', mode: 'automation' })
   );
-  assert.equal(hasValidTransportBearerToken('Bearer transport-only-token', 'transport-only-token'), true);
+  assert.equal(
+    hasValidTransportBearerToken('Bearer transport-only-token', 'transport-only-token'),
+    true
+  );
   assert.equal(hasValidTransportBearerToken('Bearer wrong', 'transport-only-token'), false);
 });
 
@@ -526,7 +549,9 @@ test('automation HTTP rejects requests without its independent transport bearer 
     assert.equal(response.status, 401);
     assert.match(await response.text(), /Unauthorized MCP transport request/);
   } finally {
-    await new Promise((resolve, reject) => listener.close((error) => (error ? reject(error) : resolve())));
+    await new Promise((resolve, reject) =>
+      listener.close((error) => (error ? reject(error) : resolve()))
+    );
   }
 });
 
@@ -605,7 +630,10 @@ test('installer does not treat configured MCP command as complete when its key i
     assert.equal(fixture.result.status, 0, fixture.result.stderr);
     assert.doesNotMatch(fixture.result.stdout, /All clients already configured/);
     assert.match(fixture.result.stdout, /All set!/);
-    assert.equal(readFileSync(join(fixture.warmConfigDir, 'context_api_key'), 'utf8').trim(), 'context-key');
+    assert.equal(
+      readFileSync(join(fixture.warmConfigDir, 'context_api_key'), 'utf8').trim(),
+      'context-key'
+    );
     assert.equal(statSync(join(fixture.warmConfigDir, 'context_api_key')).mode & 0o777, 0o600);
     const config = JSON.parse(readFileSync(join(fixture.home, '.claude.json'), 'utf8'));
     assert.equal(config.mcpServers.warm.env, undefined);
@@ -721,13 +749,19 @@ test('installer prompts for a default key when one mixed-client target lacks cre
   }, 'default-context-key\n');
   try {
     assert.equal(fixture.result.status, 0, fixture.result.stderr);
-    assert.doesNotMatch(fixture.result.stdout, /Reusing existing WARM_CONTEXT_API_KEY_FILE override/);
+    assert.doesNotMatch(
+      fixture.result.stdout,
+      /Reusing existing WARM_CONTEXT_API_KEY_FILE override/
+    );
     assert.equal(
       readFileSync(join(fixture.warmConfigDir, 'context_api_key'), 'utf8').trim(),
       'default-context-key'
     );
     const claude = JSON.parse(readFileSync(join(fixture.home, '.claude.json'), 'utf8'));
-    assert.equal(claude.mcpServers.warm.env.WARM_CONTEXT_API_KEY_FILE, join(fixture.home, 'context-key.override'));
+    assert.equal(
+      claude.mcpServers.warm.env.WARM_CONTEXT_API_KEY_FILE,
+      join(fixture.home, 'context-key.override')
+    );
     assert.deepEqual(claude.mcpServers.warm.args.slice(-2), ['--mode', 'context']);
     const cursor = JSON.parse(readFileSync(join(fixture.home, '.cursor', 'mcp.json'), 'utf8'));
     assert.equal(cursor.mcpServers.warm.env, undefined);
@@ -783,7 +817,12 @@ test('installer updates CRLF Codex TOML without losing custom env or config line
     assert.match(updated, /model_reasoning_effort = "high"/);
     assert.match(updated, /CUSTOM_KEEP = "preserved"/);
     assert.match(updated, /trust_level = "trusted"/);
-    assert.match(updated, new RegExp(`WARM_CONTEXT_API_KEY_FILE = "${overridePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
+    assert.match(
+      updated,
+      new RegExp(
+        `WARM_CONTEXT_API_KEY_FILE = "${overridePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`
+      )
+    );
     assert.doesNotMatch(updated, /WARM_AUTOMATION_API_KEY_FILE/);
     assert.match(updated, /args = \["-y", "@warmio\/mcp@latest", "mcp", "--mode", "context"\]/);
     assert.equal((updated.match(/\[mcp_servers\.warm\]/g) || []).length, 1);
@@ -793,21 +832,25 @@ test('installer updates CRLF Codex TOML without losing custom env or config line
 });
 
 test('installer restores 0600 permissions when overwriting a stored key', () => {
-  const fixture = runInstallerFixture(({ home, warmConfigDir }) => {
-    writeFileSync(
-      join(home, '.claude.json'),
-      JSON.stringify({
-        mcpServers: {
-          warm: {
-            args: ['-y', '@warmio/mcp@latest', 'mcp', '--mode', 'context'],
-            command: 'npx',
+  const fixture = runInstallerFixture(
+    ({ home, warmConfigDir }) => {
+      writeFileSync(
+        join(home, '.claude.json'),
+        JSON.stringify({
+          mcpServers: {
+            warm: {
+              args: ['-y', '@warmio/mcp@latest', 'mcp', '--mode', 'context'],
+              command: 'npx',
+            },
           },
-        },
-      })
-    );
-    mkdirSync(warmConfigDir, { recursive: true });
-    writeFileSync(join(warmConfigDir, 'context_api_key'), 'old-key\n', { mode: 0o644 });
-  }, 'new-key\n', ['--force']);
+        })
+      );
+      mkdirSync(warmConfigDir, { recursive: true });
+      writeFileSync(join(warmConfigDir, 'context_api_key'), 'old-key\n', { mode: 0o644 });
+    },
+    'new-key\n',
+    ['--force']
+  );
   try {
     assert.equal(fixture.result.status, 0, fixture.result.stderr);
     const keyPath = join(fixture.warmConfigDir, 'context_api_key');
@@ -820,22 +863,26 @@ test('installer restores 0600 permissions when overwriting a stored key', () => 
 
 test('--force rotates away from an existing selected key-file override', () => {
   let overridePath;
-  const fixture = runInstallerFixture(({ home }) => {
-    overridePath = join(home, 'old-context-key.override');
-    writeFileSync(overridePath, 'old-override-key\n');
-    writeFileSync(
-      join(home, '.claude.json'),
-      JSON.stringify({
-        mcpServers: {
-          warm: {
-            args: ['-y', '@warmio/mcp@latest', 'mcp', '--mode', 'context'],
-            command: 'npx',
-            env: { WARM_CONTEXT_API_KEY_FILE: overridePath },
+  const fixture = runInstallerFixture(
+    ({ home }) => {
+      overridePath = join(home, 'old-context-key.override');
+      writeFileSync(overridePath, 'old-override-key\n');
+      writeFileSync(
+        join(home, '.claude.json'),
+        JSON.stringify({
+          mcpServers: {
+            warm: {
+              args: ['-y', '@warmio/mcp@latest', 'mcp', '--mode', 'context'],
+              command: 'npx',
+              env: { WARM_CONTEXT_API_KEY_FILE: overridePath },
+            },
           },
-        },
-      })
-    );
-  }, 'rotated-context-key\n', ['--force']);
+        })
+      );
+    },
+    'rotated-context-key\n',
+    ['--force']
+  );
   try {
     assert.equal(fixture.result.status, 0, fixture.result.stderr);
     assert.equal(
@@ -862,14 +909,15 @@ test('installer validates an already-configured effective key and blocks typed 4
 
   const home = mkdtempSync(join(tmpdir(), 'warm-mcp-installer-403-'));
   const configPath = join(home, '.claude.json');
-  const originalConfig = JSON.stringify({
-    mcpServers: {
-      warm: {
-        args: ['-y', '@warmio/mcp@latest', 'mcp', '--mode', 'context'],
-        command: 'npx',
+  const originalConfig =
+    JSON.stringify({
+      mcpServers: {
+        warm: {
+          args: ['-y', '@warmio/mcp@latest', 'mcp', '--mode', 'context'],
+          command: 'npx',
+        },
       },
-    },
-  }) + '\n';
+    }) + '\n';
   writeFileSync(configPath, originalConfig);
   const warmConfigDir = join(home, 'warm-config');
   mkdirSync(warmConfigDir, { recursive: true });
@@ -878,24 +926,20 @@ test('installer validates an already-configured effective key and blocks typed 4
   assert.equal(typeof address, 'object');
 
   try {
-    const child = spawn(
-      process.execPath,
-      [installerCliPath, 'install', '--mode', 'context'],
-      {
-        cwd: home,
-        env: {
-          ...process.env,
-          HOME: home,
-          WARM_API_URL: `http://127.0.0.1:${address.port}`,
-          WARM_AUTOMATION_API_KEY: '',
-          WARM_AUTOMATION_API_KEY_FILE: '',
-          WARM_CONFIG_DIR: warmConfigDir,
-          WARM_CONTEXT_API_KEY: '',
-          WARM_CONTEXT_API_KEY_FILE: '',
-        },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }
-    );
+    const child = spawn(process.execPath, [installerCliPath, 'install', '--mode', 'context'], {
+      cwd: home,
+      env: {
+        ...process.env,
+        HOME: home,
+        WARM_API_URL: `http://127.0.0.1:${address.port}`,
+        WARM_AUTOMATION_API_KEY: '',
+        WARM_AUTOMATION_API_KEY_FILE: '',
+        WARM_CONFIG_DIR: warmConfigDir,
+        WARM_CONTEXT_API_KEY: '',
+        WARM_CONTEXT_API_KEY_FILE: '',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');

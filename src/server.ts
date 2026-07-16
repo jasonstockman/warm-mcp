@@ -15,6 +15,7 @@ import {
   getTransactionsMcpInputSchema,
   normalizeGetTransactionsMcpInput,
   privateMcpToolDefinitions,
+  type PrivateMcpMode,
 } from '@warmio/contracts/mcp';
 
 import {
@@ -33,7 +34,7 @@ export interface WarmServerOptions extends WarmApiClientOptions {
   serverInfo?: Implementation;
 }
 
-export type WarmServerMode = 'automation' | 'context';
+export type WarmServerMode = PrivateMcpMode;
 
 export const API_URL = process.env.WARM_API_URL || 'https://app.warm.io';
 

@@ -4,6 +4,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      version:
+        description: Exact @warmio/mcp version to publish
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,5 +25,65 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
       - run: npm ci
+      - name: Require the requested exact package version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: node -e "const pkg=require('./package.json'); if (pkg.version !== process.env.REQUESTED_VERSION) throw new Error('Requested version must exactly match package.json');"
+      - name: Require the matching release tag
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          package_version="$(node -p \"require('./package.json').version\")"
+          expected_tag="v$package_version"
+          test "$RELEASE_TAG" = "$expected_tag"
+          git fetch --tags --force
+          test "$(git tag --points-at HEAD --list "$expected_tag")" = "$expected_tag"
       - run: npm test
+      - name: Pack and verify the release tarball
+        run: |
+          tarball="$(npm pack --json | node -e 'let text=""; process.stdin.on("data", chunk => text += chunk); process.stdin.on("end", () => console.log(JSON.parse(text)[0].filename));')"
+          test -f "$tarball"
+          install_dir="$(mktemp -d)"
+          npm install --ignore-scripts --prefix "$install_dir" "$(pwd)/$tarball"
+          node --input-type=module -e "import(process.argv[1]).then(() => console.log('packed module import passed'))" "$install_dir/node_modules/@warmio/mcp/dist/index.js"
+          rm -rf "$install_dir" "$tarball"
       - run: npm publish --access public
+      - name: Verify registry readback
+        run: |
+          package_name="$(node -p \"require('./package.json').name\")"
+          package_version="$(node -p \"require('./package.json').version\")"
+          metadata=""
+          for attempt in 1 2 3 4 5 6; do
+            metadata="$(npm view \"$package_name@$package_version\" --json 2>/dev/null || true)"
+            if METADATA="$metadata" PACKAGE_NAME="$package_name" PACKAGE_VERSION="$package_version" node -e '
+              try {
+                const metadata = JSON.parse(process.env.METADATA);
+                process.exit(metadata.name === process.env.PACKAGE_NAME && metadata.version === process.env.PACKAGE_VERSION && metadata.dist?.integrity ? 0 : 1);
+              } catch { process.exit(1); }
+            '; then
+              break
+            fi
+            if [ "$attempt" = 6 ]; then
+              echo "Registry readback did not return the requested package after 6 attempts." >&2
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
+          source_commit="$(git rev-parse HEAD)"
+          package_digest="sha256:$(shasum -a 256 package.json | awk '{print $1}')"
+          METADATA="$metadata" PACKAGE_NAME="$package_name" PACKAGE_VERSION="$package_version" node -e '
+            const metadata = JSON.parse(process.env.METADATA);
+            if (metadata.name !== process.env.PACKAGE_NAME || metadata.version !== process.env.PACKAGE_VERSION || !metadata.dist?.integrity) {
+              throw new Error("Registry readback did not return the published package, version, and integrity.");
+            }
+          '
+          integrity="$(METADATA="$metadata" node -p 'JSON.parse(process.env.METADATA).dist.integrity')"
+          {
+            echo "## MCP release readback"
+            echo "- package: $package_name@$package_version"
+            echo "- integrity: $integrity"
+            echo "- source commit: $source_commit"
+            echo "- package metadata digest: $package_digest"
+          } >> "$GITHUB_STEP_SUMMARY"

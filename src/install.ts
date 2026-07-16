@@ -2,22 +2,25 @@ import { createInterface } from 'readline';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { homedir, platform } from 'os';
-
-import { verifyWarmApiKey, WarmApiError } from './server.js';
-import { getWarmApiKeyPath, readConfigFile, type WarmApiAudience } from './config-paths.js';
 import {
   WARM_MCP_CLIENTS,
-  WARM_MCP_PACKAGE_SPEC,
+  WARM_MCP_CREDENTIALS,
   WARM_MCP_PROJECT_CONFIGS,
+  WARM_MCP_SERVER_CONFIGS,
+  type PrivateMcpMode,
   type WarmMcpClientId,
-} from './manifest.js';
+  type WarmMcpConfigPath,
+} from '@warmio/contracts/mcp';
+
+import { verifyWarmApiKey, WarmApiError } from './server.js';
+import { getWarmApiKeyPath, readConfigFile } from './config-paths.js';
 
 const HOME = homedir();
 const CWD = process.cwd();
 
 export interface InstallOptions {
   force?: boolean;
-  mode?: WarmApiAudience;
+  mode?: PrivateMcpMode;
   validateApiKey?: boolean;
 }
 
@@ -49,58 +52,56 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function getClaudeDesktopPath(): string {
-  if (platform() === 'win32') {
-    return join(
-      process.env.APPDATA || join(HOME, 'AppData', 'Roaming'),
-      'Claude',
-      'claude_desktop_config.json'
-    );
-  }
-
-  if (platform() === 'darwin') {
-    return join(HOME, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
-  }
-
-  return join(HOME, '.config', 'claude', 'claude_desktop_config.json');
+function resolveClientConfigPath(configPath: WarmMcpConfigPath): string {
+  const root =
+    configPath.root === 'appData' ? process.env.APPDATA || join(HOME, 'AppData', 'Roaming') : HOME;
+  return join(root, ...configPath.segments);
 }
 
 function getClientConfigPath(clientId: WarmMcpClientId): string {
-  switch (clientId) {
-    case 'claude-code':
-      return join(HOME, '.claude.json');
-    case 'claude-desktop':
-      return getClaudeDesktopPath();
-    case 'cursor':
-      return join(HOME, '.cursor', 'mcp.json');
-    case 'windsurf':
-      return join(HOME, '.codeium', 'windsurf', 'mcp_config.json');
-    case 'opencode':
-      return join(HOME, '.config', 'opencode', 'opencode.json');
-    case 'codex-cli':
-      return join(HOME, '.codex', 'config.toml');
-    case 'antigravity':
-      return join(HOME, '.gemini', 'antigravity', 'mcp_config.json');
-    case 'gemini-cli':
-      return join(HOME, '.gemini', 'settings.json');
+  const client = WARM_MCP_CLIENTS.find((candidate) => candidate.id === clientId);
+  if (!client) {
+    throw new Error(`Unsupported MCP client: ${clientId}`);
   }
+
+  const currentPlatform = platform();
+  const configPath =
+    currentPlatform === 'darwin'
+      ? client.configPaths.darwin
+      : currentPlatform === 'win32'
+        ? client.configPaths.win32
+        : client.configPaths.linux;
+  return resolveClientConfigPath(configPath);
 }
 
 const GLOBAL_CLIENTS: Client[] = WARM_MCP_CLIENTS.map((client) => ({
-  ...client,
+  name: client.name,
+  format: client.format,
   configPath: getClientConfigPath(client.id),
-  alwaysInclude: client.id === 'claude-code',
+  alwaysInclude: 'alwaysInclude' in client && client.alwaysInclude,
 }));
 
-function getServerName(mode: WarmApiAudience): string {
-  return mode === 'automation' ? 'warm-automation' : 'warm';
+function getServerName(mode: PrivateMcpMode): string {
+  return WARM_MCP_SERVER_CONFIGS[mode].serverName;
 }
 
-function getMcpConfig(mode: WarmApiAudience) {
-  const args = ['-y', WARM_MCP_PACKAGE_SPEC, 'mcp', '--mode', mode];
+function getCredential(mode: PrivateMcpMode) {
+  return WARM_MCP_CREDENTIALS[mode];
+}
+
+function getOppositeCredential(mode: PrivateMcpMode) {
+  return WARM_MCP_CREDENTIALS[mode === 'automation' ? 'context' : 'automation'];
+}
+
+function getMcpConfig(mode: PrivateMcpMode) {
+  const serverConfig = WARM_MCP_SERVER_CONFIGS[mode];
   return platform() === 'win32'
-    ? { command: 'cmd', args: ['/c', 'npx', ...args] }
-    : { command: 'npx', args };
+    ? { command: 'cmd', args: ['/c', serverConfig.command, ...serverConfig.args] }
+    : { command: serverConfig.command, args: [...serverConfig.args] };
+}
+
+function formatTomlStringArray(values: readonly string[]): string {
+  return `[${values.map((value) => JSON.stringify(value)).join(', ')}]`;
 }
 
 function detectProjectClients(): Client[] {
@@ -142,7 +143,7 @@ function isWarmPackageSpecifier(value: string): boolean {
 function isSupportedWarmInvocation(
   command: string | undefined,
   args: string[],
-  mode: WarmApiAudience
+  mode: PrivateMcpMode
 ): boolean {
   if (command !== 'npx' && command !== 'cmd') {
     return false;
@@ -158,25 +159,27 @@ function isSupportedWarmInvocation(
 
 function getJsonEnvStatus(
   server: Record<string, unknown> | undefined,
-  mode: WarmApiAudience
+  mode: PrivateMcpMode
 ): ClientEnvStatus {
   const env = isRecord(server?.env) ? server.env : undefined;
-  const apiKeyName = mode === 'automation' ? 'WARM_AUTOMATION_API_KEY' : 'WARM_CONTEXT_API_KEY';
-  const apiKeyFileName = `${apiKeyName}_FILE`;
-  const oppositeApiKeyName =
-    mode === 'automation' ? 'WARM_CONTEXT_API_KEY' : 'WARM_AUTOMATION_API_KEY';
+  const credential = getCredential(mode);
+  const oppositeCredential = getOppositeCredential(mode);
+  const apiKeyName = credential.apiKeyEnv;
+  const apiKeyFileName = credential.apiKeyFileEnv;
   const inlineApiKey =
-    typeof env?.[apiKeyName] === 'string' && env[apiKeyName].trim()
-      ? env[apiKeyName].trim()
-      : null;
+    typeof env?.[apiKeyName] === 'string' && env[apiKeyName].trim() ? env[apiKeyName].trim() : null;
 
   return {
     apiKeyFileOverride:
       typeof env?.[apiKeyFileName] === 'string' && env[apiKeyFileName].trim().length > 0
         ? env[apiKeyFileName].trim()
         : null,
-    hasIrrelevantCredential: ['WARM_API_KEY', 'WARM_API_KEY_FILE', oppositeApiKeyName, `${oppositeApiKeyName}_FILE`]
-      .some((name) => typeof env?.[name] === 'string' && env[name].trim().length > 0),
+    hasIrrelevantCredential: [
+      'WARM_API_KEY',
+      'WARM_API_KEY_FILE',
+      oppositeCredential.apiKeyEnv,
+      oppositeCredential.apiKeyFileEnv,
+    ].some((name) => typeof env?.[name] === 'string' && env[name].trim().length > 0),
     inlineApiKey,
   };
 }
@@ -195,7 +198,7 @@ function createClientStatus(
   client: Client,
   invocationState: ClientSetupState,
   envStatus: ClientEnvStatus,
-  mode: WarmApiAudience
+  mode: PrivateMcpMode
 ): ClientStatus {
   const credentialApiKey =
     envStatus.inlineApiKey ||
@@ -212,7 +215,7 @@ function createClientStatus(
   return { client, credentialApiKey, state, ...envStatus };
 }
 
-function getJsonStatus(client: Client, content: string, mode: WarmApiAudience): ClientStatus {
+function getJsonStatus(client: Client, content: string, mode: PrivateMcpMode): ClientStatus {
   try {
     const parsed = JSON.parse(content) as Record<string, unknown>;
     const servers = isRecord(parsed.mcpServers) ? parsed.mcpServers : undefined;
@@ -287,7 +290,10 @@ function getTomlStringArrayValue(block: string | null, key: string): string[] {
   return values;
 }
 
-function getTomlEnvStatus(content: string, mode: WarmApiAudience): {
+function getTomlEnvStatus(
+  content: string,
+  mode: PrivateMcpMode
+): {
   envLines: string[];
 } & ClientEnvStatus {
   const envBlock = getTomlSection(content, `mcp_servers.${getServerName(mode)}.env`);
@@ -300,27 +306,31 @@ function getTomlEnvStatus(content: string, mode: WarmApiAudience): {
     };
   }
 
-  const envLines = envBlock.split(/\r?\n/).slice(1).filter((line) => line.trim().length > 0);
-  const apiKeyName = mode === 'automation' ? 'WARM_AUTOMATION_API_KEY' : 'WARM_CONTEXT_API_KEY';
-  const oppositeApiKeyName =
-    mode === 'automation' ? 'WARM_CONTEXT_API_KEY' : 'WARM_AUTOMATION_API_KEY';
+  const envLines = envBlock
+    .split(/\r?\n/)
+    .slice(1)
+    .filter((line) => line.trim().length > 0);
+  const credential = getCredential(mode);
+  const oppositeCredential = getOppositeCredential(mode);
+  const apiKeyName = credential.apiKeyEnv;
   const inlineApiKey = getTomlStringValue(envBlock, apiKeyName)?.trim() || null;
-  const apiKeyFile = getTomlStringValue(envBlock, `${apiKeyName}_FILE`);
+  const apiKeyFile = getTomlStringValue(envBlock, credential.apiKeyFileEnv);
 
   return {
-    apiKeyFileOverride: typeof apiKeyFile === 'string' && apiKeyFile.trim() ? apiKeyFile.trim() : null,
+    apiKeyFileOverride:
+      typeof apiKeyFile === 'string' && apiKeyFile.trim() ? apiKeyFile.trim() : null,
     envLines,
     hasIrrelevantCredential: [
       'WARM_API_KEY',
       'WARM_API_KEY_FILE',
-      oppositeApiKeyName,
-      `${oppositeApiKeyName}_FILE`,
+      oppositeCredential.apiKeyEnv,
+      oppositeCredential.apiKeyFileEnv,
     ].some((name) => Boolean(getTomlStringValue(envBlock, name)?.trim())),
     inlineApiKey,
   };
 }
 
-function getTomlStatus(client: Client, content: string, mode: WarmApiAudience): ClientStatus {
+function getTomlStatus(client: Client, content: string, mode: PrivateMcpMode): ClientStatus {
   const warmBlock = getTomlSection(content, `mcp_servers.${getServerName(mode)}`);
   const envStatus = getTomlEnvStatus(content, mode);
 
@@ -338,7 +348,7 @@ function getTomlStatus(client: Client, content: string, mode: WarmApiAudience): 
   return createClientStatus(client, 'needs_setup', envStatus, mode);
 }
 
-function getClientStatus(client: Client, mode: WarmApiAudience): ClientStatus {
+function getClientStatus(client: Client, mode: PrivateMcpMode): ClientStatus {
   if (!existsSync(client.configPath)) {
     return createClientStatus(
       client,
@@ -359,7 +369,7 @@ function getClientStatus(client: Client, mode: WarmApiAudience): ClientStatus {
 
 function configureJson(
   client: Client,
-  mode: WarmApiAudience,
+  mode: PrivateMcpMode,
   preserveSelectedKeyFile: boolean
 ): void {
   let config: Record<string, unknown> = {};
@@ -374,7 +384,9 @@ function configureJson(
       );
     }
     if (!isRecord(parsed)) {
-      throw new Error(`Refusing to overwrite JSON config ${client.configPath}: root must be an object.`);
+      throw new Error(
+        `Refusing to overwrite JSON config ${client.configPath}: root must be an object.`
+      );
     }
     config = parsed;
   }
@@ -399,16 +411,15 @@ function configureJson(
     !!existingCommand &&
     isSupportedWarmInvocation(existingCommand, existingArgs, mode);
 
-  const selectedKeyFile =
-    mode === 'automation' ? 'WARM_AUTOMATION_API_KEY_FILE' : 'WARM_CONTEXT_API_KEY_FILE';
-  const oppositeKeyFile =
-    mode === 'automation' ? 'WARM_CONTEXT_API_KEY_FILE' : 'WARM_AUTOMATION_API_KEY_FILE';
+  const credential = getCredential(mode);
+  const oppositeCredential = getOppositeCredential(mode);
+  const selectedKeyFile = credential.apiKeyFileEnv;
   for (const name of [
     'WARM_API_KEY',
     'WARM_API_KEY_FILE',
-    'WARM_CONTEXT_API_KEY',
-    'WARM_AUTOMATION_API_KEY',
-    oppositeKeyFile,
+    credential.apiKeyEnv,
+    oppositeCredential.apiKeyEnv,
+    oppositeCredential.apiKeyFileEnv,
   ]) {
     delete nextEnv[name];
   }
@@ -435,7 +446,7 @@ function configureJson(
 
 function configureToml(
   client: Client,
-  mode: WarmApiAudience,
+  mode: PrivateMcpMode,
   preserveSelectedKeyFile: boolean
 ): void {
   let content = '';
@@ -449,22 +460,21 @@ function configureToml(
   }
 
   const serverName = getServerName(mode);
-  const tomlCommand = platform() === 'win32' ? 'cmd' : 'npx';
-  const tomlArgs =
-    platform() === 'win32'
-      ? `["/c", "npx", "-y", "${WARM_MCP_PACKAGE_SPEC}", "mcp", "--mode", "${mode}"]`
-      : `["-y", "${WARM_MCP_PACKAGE_SPEC}", "mcp", "--mode", "${mode}"]`;
+  const serverConfig = WARM_MCP_SERVER_CONFIGS[mode];
+  const tomlCommand = platform() === 'win32' ? 'cmd' : serverConfig.command;
+  const posixArgs = formatTomlStringArray(serverConfig.args);
+  const windowsArgs = formatTomlStringArray(['/c', serverConfig.command, ...serverConfig.args]);
+  const tomlArgs = platform() === 'win32' ? windowsArgs : posixArgs;
   const warmBlock = `[mcp_servers.${serverName}]${lineEnding}command = "${tomlCommand}"${lineEnding}args = ${tomlArgs}${lineEnding}`;
-  const selectedKeyFile =
-    mode === 'automation' ? 'WARM_AUTOMATION_API_KEY_FILE' : 'WARM_CONTEXT_API_KEY_FILE';
-  const oppositeKeyFile =
-    mode === 'automation' ? 'WARM_CONTEXT_API_KEY_FILE' : 'WARM_AUTOMATION_API_KEY_FILE';
+  const credential = getCredential(mode);
+  const oppositeCredential = getOppositeCredential(mode);
+  const selectedKeyFile = credential.apiKeyFileEnv;
   const removedEnvNames = new Set([
     'WARM_API_KEY',
     'WARM_API_KEY_FILE',
-    'WARM_CONTEXT_API_KEY',
-    'WARM_AUTOMATION_API_KEY',
-    oppositeKeyFile,
+    credential.apiKeyEnv,
+    oppositeCredential.apiKeyEnv,
+    oppositeCredential.apiKeyFileEnv,
     ...(!preserveSelectedKeyFile ? [selectedKeyFile] : []),
   ]);
   const preservedEnvLines = getTomlEnvStatus(content, mode).envLines.filter((line) => {
@@ -499,11 +509,7 @@ function configureToml(
   );
 }
 
-function configure(
-  client: Client,
-  mode: WarmApiAudience,
-  preserveSelectedKeyFile: boolean
-): void {
+function configure(client: Client, mode: PrivateMcpMode, preserveSelectedKeyFile: boolean): void {
   if (client.format === 'json') {
     configureJson(client, mode, preserveSelectedKeyFile);
     return;
@@ -526,7 +532,7 @@ function prompt(question: string): Promise<string> {
   });
 }
 
-async function validateApiKey(apiKey: string, mode: WarmApiAudience): Promise<boolean> {
+async function validateApiKey(apiKey: string, mode: PrivateMcpMode): Promise<boolean> {
   console.log('  Validating API key...');
 
   try {
@@ -565,7 +571,7 @@ async function validateApiKey(apiKey: string, mode: WarmApiAudience): Promise<bo
 
 async function validateEffectiveApiKeys(
   apiKeys: Array<string | null | undefined>,
-  mode: WarmApiAudience
+  mode: PrivateMcpMode
 ): Promise<void> {
   const uniqueApiKeys = [...new Set(apiKeys.filter((apiKey): apiKey is string => Boolean(apiKey)))];
   for (const apiKey of uniqueApiKeys) {
@@ -575,7 +581,7 @@ async function validateEffectiveApiKeys(
   }
 }
 
-function storeApiKey(apiKey: string, mode: WarmApiAudience): void {
+function storeApiKey(apiKey: string, mode: PrivateMcpMode): void {
   const apiKeyPath = getWarmApiKeyPath(mode);
   mkdirSync(dirname(apiKeyPath), { recursive: true });
   writeFileSync(apiKeyPath, `${apiKey}\n`, { mode: 0o600 });
@@ -638,8 +644,9 @@ export async function install(options: InstallOptions = {}): Promise<void> {
   const apiKeyPath = getWarmApiKeyPath(mode);
   const storedApiKey = readConfigFile(apiKeyPath);
   const migratedApiKey =
-    needsSetup.find((status) => typeof status.inlineApiKey === 'string' && status.inlineApiKey.length > 0)
-      ?.inlineApiKey ?? null;
+    needsSetup.find(
+      (status) => typeof status.inlineApiKey === 'string' && status.inlineApiKey.length > 0
+    )?.inlineApiKey ?? null;
   const usableApiKeyFileOverride = needsSetup.find(
     (status) => status.apiKeyFileOverride && !status.inlineApiKey && status.credentialApiKey
   );
@@ -660,9 +667,7 @@ export async function install(options: InstallOptions = {}): Promise<void> {
       apiKeyToStore = migratedApiKey;
       shouldStoreApiKey = true;
     } else if (usableApiKeyFileOverride && !targetMissingCredential) {
-      console.log(
-        `  Reusing existing ${mode === 'automation' ? 'WARM_AUTOMATION_API_KEY_FILE' : 'WARM_CONTEXT_API_KEY_FILE'} override.`
-      );
+      console.log(`  Reusing existing ${getCredential(mode).apiKeyFileEnv} override.`);
       console.log('');
     } else {
       shouldPromptForApiKey = true;

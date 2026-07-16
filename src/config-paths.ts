@@ -1,8 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-
-export type WarmApiAudience = 'automation' | 'context';
+import { WARM_MCP_CREDENTIALS, type PrivateMcpMode } from '@warmio/contracts/mcp';
 
 export function getWarmConfigDir(): string {
   if (process.env.WARM_CONFIG_DIR?.trim()) {
@@ -24,15 +23,14 @@ export function getWarmConfigDir(): string {
   return path.join(os.homedir(), '.config', 'warm');
 }
 
-export function getWarmApiKeyPath(audience: WarmApiAudience = 'context'): string {
-  const envKey =
-    audience === 'automation' ? 'WARM_AUTOMATION_API_KEY_FILE' : 'WARM_CONTEXT_API_KEY_FILE';
-  const configuredPath = process.env[envKey]?.trim();
+export function getWarmApiKeyPath(audience: PrivateMcpMode = 'context'): string {
+  const credential = WARM_MCP_CREDENTIALS[audience];
+  const configuredPath = process.env[credential.apiKeyFileEnv]?.trim();
   if (configuredPath) {
     return configuredPath;
   }
 
-  return path.join(getWarmConfigDir(), `${audience}_api_key`);
+  return path.join(getWarmConfigDir(), credential.defaultFileName);
 }
 
 export function readConfigFile(configPath: string): string | null {

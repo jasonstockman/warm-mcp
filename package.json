@@ -1,9 +1,12 @@
 {
   "name": "@warmio/mcp",
-  "version": "8.0.0",
+  "version": "9.1.0",
   "mcpName": "io.github.jasonstockman/warmio",
   "description": "Warm CLI and compact context or automation MCP server",
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "publishConfig": {
@@ -25,10 +28,6 @@
     "./install": {
       "types": "./dist/install.d.ts",
       "default": "./dist/install.js"
-    },
-    "./manifest": {
-      "types": "./dist/manifest.d.ts",
-      "default": "./dist/manifest.js"
     }
   },
   "bin": {
@@ -38,7 +37,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/clean.mjs && tsc",
     "test": "npm run build && node --test test/*.mjs",
     "start": "node dist/index.js mcp",
     "start:http": "node dist/index.js http",
@@ -61,7 +60,7 @@
     "url": "git+https://github.com/jasonstockman/warm-mcp.git"
   },
   "dependencies": {
-    "@warmio/contracts": "1.0.0",
+    "@warmio/contracts": "1.2.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "dotenv": "^17.2.3",
     "zod": "^3.25.76"

@@ -14,7 +14,7 @@ are stored separately and are never shared between modes.
 
 ## Requirements
 
-- Warm Pro
+- Any paid Warm plan (Plus or Pro)
 - A context key or an automation key from [Settings -> API Keys](https://warm.io/settings)
 - Node.js 18+
 
@@ -272,7 +272,20 @@ Latest response:
   "since": "2026-06-26",
   "window_days": 10,
   "count": 1,
-  "items": []
+  "items": [
+    {
+      "id": "txn_1",
+      "account_id": "acct_1",
+      "date": "2026-07-05",
+      "amount": 42.18,
+      "merchant": "Whole Foods",
+      "name": "WHOLE FOODS",
+      "category": "FOOD_AND_DRINK",
+      "subcategory": "FOOD_AND_DRINK_GROCERIES",
+      "pending": false,
+      "currency": "USD"
+    }
+  ]
 }
 ```
 
@@ -292,14 +305,6 @@ Returns:
   "status": "ok"
 }
 ```
-
-## v7 Breaking Changes
-
-v7 is a clean pre-launch cutover with no backwards compatibility or alias window.
-
-- API keys are audience-bound: context keys cannot invoke actions and automation keys cannot run context mode.
-- `X-API-Key` is removed. Use `Authorization: Bearer`.
-- Automation is a separate opt-in MCP server mode, not extra tools on the context server.
 
 ## Security
 

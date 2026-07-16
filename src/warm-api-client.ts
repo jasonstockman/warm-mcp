@@ -1,8 +1,13 @@
+import { getWarmApiKeyPath, readConfigFile } from './config-paths.js';
 import {
-  getWarmApiKeyPath,
-  readConfigFile,
-  type WarmApiAudience,
-} from './config-paths.js';
+  API_ORIGIN,
+  apiEndpointManifest,
+} from '@warmio/contracts/api';
+import {
+  WARM_MCP_CREDENTIALS,
+  WARM_MCP_INSTALLER_COMMANDS,
+  type PrivateMcpMode,
+} from '@warmio/contracts/mcp';
 import type {
   AutomationInput,
   AutomationOperation,
@@ -34,7 +39,7 @@ export type {
 } from '@warmio/contracts/types';
 
 export interface WarmApiClientOptions {
-  audience?: WarmApiAudience;
+  audience?: PrivateMcpMode;
   apiKeyResolver?: () => string | null;
   apiUrl?: string;
   fetchImplementation?: typeof fetch;
@@ -106,12 +111,27 @@ interface WarmApiVerifyResponse {
   valid?: boolean;
 }
 
-const DEFAULT_API_URL = process.env.WARM_API_URL || 'https://app.warm.io';
+const DEFAULT_API_URL = process.env.WARM_API_URL || API_ORIGIN;
 const DEFAULT_REQUEST_TIMEOUT_MS = (() => {
   const raw = Number(process.env.WARM_API_TIMEOUT_MS || 10_000);
   return Number.isFinite(raw) && raw > 0 ? raw : 10_000;
 })();
-const cachedApiKeys = new Map<WarmApiAudience, string | null>();
+const cachedApiKeys = new Map<PrivateMcpMode, string | null>();
+
+const endpointByOperationId = Object.fromEntries(
+  apiEndpointManifest.map((endpoint) => [endpoint.operation_id, endpoint])
+) as Record<(typeof apiEndpointManifest)[number]['operation_id'], (typeof apiEndpointManifest)[number]>;
+
+function getEndpointPath(
+  operationId: keyof typeof endpointByOperationId,
+  audience: PrivateMcpMode
+): string {
+  const endpoint = endpointByOperationId[operationId];
+  if (endpoint.audience !== audience) {
+    throw new Error(`API operation ${operationId} is not available to ${audience}.`);
+  }
+  return endpoint.path;
+}
 
 function getRequestSignal(timeoutMs: number): AbortSignal {
   if (typeof AbortSignal.timeout === 'function') {
@@ -134,13 +154,12 @@ function createWarmApiClientConfig(options: WarmApiClientOptions) {
   };
 }
 
-export function getConfiguredApiKey(audience: WarmApiAudience = 'context'): string | null {
+export function getConfiguredApiKey(audience: PrivateMcpMode = 'context'): string | null {
   if (cachedApiKeys.has(audience)) {
     return cachedApiKeys.get(audience) ?? null;
   }
 
-  const environmentKey =
-    audience === 'automation' ? 'WARM_AUTOMATION_API_KEY' : 'WARM_CONTEXT_API_KEY';
+  const environmentKey = WARM_MCP_CREDENTIALS[audience].apiKeyEnv;
   const apiKey = process.env[environmentKey]?.trim() || readConfigFile(getWarmApiKeyPath(audience));
   cachedApiKeys.set(audience, apiKey);
   return apiKey;
@@ -203,7 +222,7 @@ async function requestWarmApi<TResponse>(
 
   if (!apiKey) {
     throw new Error(
-      `No ${requestOptions.audience} API key configured. Run "npx @warmio/mcp install --mode ${requestOptions.audience}" or set ${requestOptions.audience === 'automation' ? 'WARM_AUTOMATION_API_KEY' : 'WARM_CONTEXT_API_KEY'}.`
+      `No ${requestOptions.audience} API key configured. Run "${WARM_MCP_INSTALLER_COMMANDS[requestOptions.audience]}" or set ${WARM_MCP_CREDENTIALS[requestOptions.audience].apiKeyEnv}.`
     );
   }
 
@@ -266,42 +285,47 @@ async function requestSuccessfulJson<TResponse>(
 
 export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApiClient {
   const getFinancialContext = async (): Promise<FinancialContext> =>
-    await requestSuccessfulJson<FinancialContext>({ endpoint: '/api/financial-context' }, options);
-
-  const getFinancialContextMeta = async (): Promise<FinancialContextMeta> =>
-    await requestSuccessfulJson<FinancialContextMeta>(
-      { endpoint: '/api/financial-context/meta' },
+    await requestSuccessfulJson<FinancialContext>(
+      { endpoint: getEndpointPath('getFinancialContext', 'context') },
       options
     );
 
-  const getTransactions = async (
-    input: GetTransactionsInput
-  ): Promise<GetTransactionsOutput> => {
+  const getFinancialContextMeta = async (): Promise<FinancialContextMeta> =>
+    await requestSuccessfulJson<FinancialContextMeta>(
+      { endpoint: getEndpointPath('getFinancialContextMeta', 'context') },
+      options
+    );
+
+  const getTransactions = async (input: GetTransactionsInput): Promise<GetTransactionsOutput> => {
     const rawInput = input as { latest?: unknown; month?: unknown };
     if (typeof rawInput.month === 'string' && rawInput.latest !== undefined) {
       throw new Error('`month` and `latest` are mutually exclusive.');
     }
     if (typeof rawInput.month === 'string') {
       return await requestSuccessfulJson<GetTransactionsOutput>(
-        { endpoint: '/api/financial-context/transactions', query: { month: rawInput.month } },
+        {
+          endpoint: getEndpointPath('getFinancialContextTransactions', 'context'),
+          query: { month: rawInput.month },
+        },
         options
       );
     }
     if (rawInput.latest === true) {
       return await requestSuccessfulJson<GetTransactionsOutput>(
-        { endpoint: '/api/financial-context/transactions', query: { latest: '1' } },
+        {
+          endpoint: getEndpointPath('getFinancialContextTransactions', 'context'),
+          query: { latest: '1' },
+        },
         options
       );
     }
 
-    throw new Error(
-      'Call getTransactions with `month` in YYYY-MM format or `latest: true`.'
-    );
+    throw new Error('Call getTransactions with `month` in YYYY-MM format or `latest: true`.');
   };
 
   const verifyKey = async (): Promise<VerifyKeyOutput> => {
     const response = await requestSuccessfulJson<WarmApiVerifyResponse>(
-      { endpoint: '/api/verify' },
+      { endpoint: getEndpointPath('verifyApiAccess', 'context') },
       options
     );
     return {
@@ -317,7 +341,7 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
     if (!result.valid || result.audience !== expectedAudience) {
       const article = expectedAudience === 'automation' ? 'an' : 'a';
       throw new Error(
-        `This MCP mode requires ${article} ${expectedAudience} API key. Run "npx @warmio/mcp install --mode ${expectedAudience}" to configure a separate key.`
+        `This MCP mode requires ${article} ${expectedAudience} API key. Run "${WARM_MCP_INSTALLER_COMMANDS[expectedAudience]}" to configure a separate key.`
       );
     }
     return result;
@@ -325,7 +349,11 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
 
   const searchOperations = async (query?: string) =>
     await requestSuccessfulJson<{ operations: AutomationOperation[] }>(
-      { body: query ? { query } : {}, endpoint: '/api/automation/operations/search', method: 'POST' },
+      {
+        body: query ? { query } : {},
+        endpoint: getEndpointPath('searchOperations', 'automation'),
+        method: 'POST',
+      },
       options
     );
 
@@ -333,7 +361,7 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
     await requestSuccessfulJson<DescribeOperationOutput>(
       {
         body: { operation_id: operationId, ...(input ? { input } : {}) },
-        endpoint: '/api/automation/operations/describe',
+        endpoint: getEndpointPath('describeOperation', 'automation'),
         method: 'POST',
       },
       options
@@ -351,7 +379,7 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
           input: input ?? {},
           ...(approvalId ? { approval_id: approvalId } : {}),
         },
-        endpoint: '/api/automation/operations/invoke',
+        endpoint: getEndpointPath('invokeOperation', 'automation'),
         method: 'POST',
       },
       options
@@ -371,7 +399,7 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
 
 export async function verifyWarmApiKey(
   apiKey: string,
-  audience: WarmApiAudience = 'context'
+  audience: PrivateMcpMode = 'context'
 ): Promise<VerifyKeyOutput> {
   return createWarmApiClient({
     audience,
