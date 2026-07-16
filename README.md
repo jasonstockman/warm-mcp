@@ -170,11 +170,9 @@ Automation mode is also exactly three tools:
 
 - Every tool takes a JSON object input and returns a JSON object output.
 - `get_financial_context` takes `{}` and returns compact context JSON without transaction items.
-- `get_transactions` takes either `{ "month": "YYYY-MM" }`, `{ "latest": true }`, or `{}`.
-- A bare `get_transactions` call with no arguments defaults to `{ "latest": true }`.
-- `month` must use `YYYY-MM` format, for example `2026-07`.
-- `latest` is a fixed 10-day window anchored to the current artifact; the caller cannot configure the window.
-- `month` and `latest` are mutually exclusive.
+- `get_transactions` takes one required `period` string: `{ "period": "latest" }` or `{ "period": "YYYY-MM" }`.
+- `period: "latest"` returns a fixed 10-day window anchored to the current artifact; the caller cannot configure the window.
+- A month period must use `YYYY-MM` format, for example `2026-07`.
 - A malformed month returns an error.
 - A well-formed month outside the covered range returns an error.
 - A well-formed month inside the covered range with no transactions returns `count: 0` and `items: []`.
@@ -231,7 +229,7 @@ Returns compact `FinancialContext`:
 Month input:
 
 ```json
-{ "month": "2026-07" }
+{ "period": "2026-07" }
 ```
 
 Month response:
@@ -262,7 +260,7 @@ Month response:
 Latest input:
 
 ```json
-{ "latest": true }
+{ "period": "latest" }
 ```
 
 Latest response:
