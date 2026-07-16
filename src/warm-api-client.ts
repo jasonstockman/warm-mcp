@@ -338,7 +338,9 @@ export function createWarmApiClient(options: WarmApiClientOptions = {}): WarmApi
   const validateAudience = async (): Promise<VerifyKeyOutput> => {
     const result = await verifyKey();
     const expectedAudience = createWarmApiClientConfig(options).audience;
-    if (!result.valid || result.audience !== expectedAudience) {
+    const hasCompatibleAudience =
+      result.audience === expectedAudience || result.audience === 'oauth';
+    if (!result.valid || !hasCompatibleAudience) {
       const article = expectedAudience === 'automation' ? 'an' : 'a';
       throw new Error(
         `This MCP mode requires ${article} ${expectedAudience} API key. Run "${WARM_MCP_INSTALLER_COMMANDS[expectedAudience]}" to configure a separate key.`

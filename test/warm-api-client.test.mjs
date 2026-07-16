@@ -260,6 +260,21 @@ test('verify_key structured content matches its advertised output schema', async
   }
 });
 
+test('OAuth bearer sessions execute the same context MCP tools as context API keys', async () => {
+  const { client, server } = await createConnectedMcpServer(
+    () => sampleContext,
+    'context',
+    'oauth'
+  );
+  try {
+    const result = await client.callTool({ name: 'get_financial_context', arguments: {} });
+    assert.deepEqual(result.structuredContent, sampleContext);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test('MCP modes expose separate three-tool surfaces with mode-specific annotations', async () => {
   const { client, server } = await createConnectedMcpServer(() => sampleContext, 'automation');
   try {
@@ -413,6 +428,24 @@ test('audience validation rejects a context key in automation mode', async () =>
   });
 
   await assert.rejects(client.validateAudience(), /requires an automation API key/);
+});
+
+test('audience validation accepts OAuth bearer tokens in either MCP mode', async () => {
+  const createClient = (audience) =>
+    createWarmApiClient({
+      audience,
+      apiKeyResolver: () => 'oauth-bearer-token',
+      fetchImplementation: async () =>
+        Response.json({ audience: 'oauth', status: 'ok', valid: true }),
+    });
+
+  const [contextResult, automationResult] = await Promise.all([
+    createClient('context').validateAudience(),
+    createClient('automation').validateAudience(),
+  ]);
+
+  assert.equal(contextResult.audience, 'oauth');
+  assert.equal(automationResult.audience, 'oauth');
 });
 
 test('tool handler failures become structured MCP error results', async () => {
@@ -970,14 +1003,18 @@ test('installer validates an already-configured effective key and blocks typed 4
   }
 });
 
-async function createConnectedMcpServer(assertRequest = () => sampleContext, mode = 'context') {
+async function createConnectedMcpServer(
+  assertRequest = () => sampleContext,
+  mode = 'context',
+  verifiedAudience = mode
+) {
   const server = createWarmServer({
     mode,
     apiKeyResolver: () => 'test-key',
     apiUrl: 'https://app.warm.io',
     fetchImplementation: createMockFetch((url) => {
       if (url.pathname === '/api/verify') {
-        return { audience: mode, status: 'ok', valid: true };
+        return { audience: verifiedAudience, status: 'ok', valid: true };
       }
       return assertRequest(url);
     }),
