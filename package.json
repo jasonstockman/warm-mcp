@@ -50,8 +50,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jasonstockman/warm-mcp",
-    "directory": "libraries/mcp"
+    "url": "https://github.com/jasonstockman/warm-mcp"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
