@@ -19,12 +19,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.28.1
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
-          package-manager-cache: false
-      - run: npm ci
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: Require the requested exact package version
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -40,15 +43,9 @@ jobs:
           test "$RELEASE_TAG" = "$expected_tag"
           git fetch --tags --force
           test "$(git tag --points-at HEAD --list "$expected_tag")" = "$expected_tag"
-      - run: npm test
+      - run: pnpm test
       - name: Pack and verify the release tarball
-        run: |
-          tarball="$(npm pack --json | node -e 'let text=""; process.stdin.on("data", chunk => text += chunk); process.stdin.on("end", () => console.log(JSON.parse(text)[0].filename));')"
-          test -f "$tarball"
-          install_dir="$(mktemp -d)"
-          npm install --ignore-scripts --prefix "$install_dir" "$(pwd)/$tarball"
-          node --input-type=module -e "import(process.argv[1]).then(() => console.log('packed module import passed'))" "$install_dir/node_modules/@warmio/mcp/dist/index.js"
-          rm -rf "$install_dir" "$tarball"
+        run: pnpm pack:check
       - run: npm publish --access public
       - name: Verify registry readback
         run: |
