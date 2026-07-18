@@ -1,8 +1,7 @@
 {
   "name": "@warmio/mcp",
-  "version": "10.0.0",
-  "mcpName": "io.github.jasonstockman/warmio",
-  "description": "Warm CLI and compact context or automation MCP server",
+  "version": "11.0.0",
+  "description": "Warm local stdio MCP server",
   "type": "module",
   "engines": {
     "node": ">=18"
@@ -37,36 +36,31 @@
     "dist"
   ],
   "scripts": {
-    "build": "node scripts/clean.mjs && tsc",
-    "test": "npm run build && node --test test/*.mjs",
-    "start": "node dist/index.js mcp",
-    "start:http": "node dist/index.js http",
-    "start:install": "node dist/index.js install",
-    "prepublishOnly": "npm run build",
-    "start:mcp": "node dist/index.js mcp"
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm build && node --test test/*.mjs",
+    "pack:check": "pnpm pack --dry-run"
   },
   "keywords": [
     "mcp",
     "warm",
     "warmio",
     "financial",
-    "api",
-    "claude",
-    "chatgpt"
+    "api"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jasonstockman/warm-mcp.git"
+    "url": "git+https://github.com/jasonstockman/warm-app.git",
+    "directory": "libraries/mcp"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "@warmio/contracts": "2.0.0",
+    "@warmio/contracts": "3.0.0",
     "dotenv": "^17.2.3",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^24.10.9",
-    "typescript": "^5.9.3"
+    "typescript": "7.0.2"
   }
 }

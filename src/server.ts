@@ -1,5 +1,4 @@
 import * as fs from 'node:fs';
-
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
 import {
@@ -15,237 +14,195 @@ import {
   getTransactionsMcpInputSchema,
   normalizeGetTransactionsMcpInput,
   privateMcpToolDefinitions,
-  type PrivateMcpMode,
+  privateMcpToolDescriptors,
 } from '@warmio/contracts/mcp';
-
 import {
+  createReadOnlyWarmApiClient,
   createWarmApiClient,
+  type ReadOnlyWarmApiClient,
+  type ReadOnlyWarmApiClientOptions,
+  type WarmApiClient,
   type WarmApiClientOptions,
-  getConfiguredApiKey,
-  verifyWarmApiKey,
   WarmApiError,
 } from './warm-api-client.js';
 
-export { createWarmApiClient, getConfiguredApiKey, verifyWarmApiKey, WarmApiError };
-export type { WarmApiClientOptions } from './warm-api-client.js';
+export {
+  createReadOnlyWarmApiClient,
+  createWarmApiClient,
+  getConfiguredApiKey,
+  WarmApiError,
+} from './warm-api-client.js';
+export type { ReadOnlyWarmApiClientOptions, WarmApiClientOptions } from './warm-api-client.js';
 
 export interface WarmServerOptions extends WarmApiClientOptions {
-  mode?: WarmServerMode;
+  serverInfo?: Implementation;
+}
+export interface ReadOnlyWarmServerOptions extends ReadOnlyWarmApiClientOptions {
   serverInfo?: Implementation;
 }
 
-export type WarmServerMode = PrivateMcpMode;
-
-export const API_URL = process.env.WARM_API_URL || 'https://app.warm.io';
-
-function getPackageVersion(): string {
+function packageVersion(): string {
   try {
-    const packageJson = fs.readFileSync(new URL('../package.json', import.meta.url), 'utf-8');
-    const parsed = JSON.parse(packageJson) as { version?: string };
-    return parsed.version || '0.0.0';
+    return (
+      (
+        JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+          version?: string;
+        }
+      ).version || '0.0.0'
+    );
   } catch {
     return '0.0.0';
   }
 }
 
-export const WARM_SERVER_INFO = {
-  name: 'warm',
-  version: getPackageVersion(),
+export const WARM_SERVER_INFO = { name: 'warm', version: packageVersion() };
+
+type WarmToolDefinition = {
+  annotations?: ToolAnnotations;
+  description: string;
+  inputShape: ZodRawShape;
+  name: string;
+  handler: (args: Record<string, unknown>) => Promise<object>;
 };
 
-function createStructuredToolResult<TStructuredContent extends Record<string, unknown>>(
-  structuredContent: TStructuredContent,
-  isError = false
-) {
+function structuredResult(value: object, isError = false) {
   return {
-    content: [
-      {
-        type: 'text' as const,
-        text: JSON.stringify(structuredContent, null, 2),
-      },
-    ],
-    ...(isError ? { isError: true } : { structuredContent }),
+    content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }],
+    ...(isError ? { isError: true } : { structuredContent: value }),
   };
 }
 
-interface WarmToolDefinition {
-  annotations?: ToolAnnotations;
-  description: string;
-  handler: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
-  inputShape: ZodRawShape;
-  name: string;
-  outputSchema: z.ZodTypeAny;
-}
-
-function createToolFailure(error: unknown) {
+function toolFailure(error: unknown) {
   if (error instanceof WarmApiError) {
-    return createStructuredToolResult(
-      {
-        body: error.body,
-        headers: error.headers,
-        message: error.message,
-        status: error.status,
-      },
-      true
-    );
+    return structuredResult({ error: error.message, status: error.status }, true);
   }
-
-  return createStructuredToolResult(
-    {
-      error: {
-        message: error instanceof Error ? error.message : String(error),
-      },
-    },
-    true
-  );
+  return structuredResult({ error: error instanceof Error ? error.message : String(error) }, true);
 }
 
-function getToolDefinition(name: string, mode: WarmServerMode) {
-  const definition = privateMcpToolDefinitions.find(
-    (candidate) => candidate.mode === mode && candidate.name === name
-  );
-  if (!definition) throw new Error(`Missing ${mode} MCP contract for ${name}.`);
+function descriptor(name: string) {
+  const definition = privateMcpToolDefinitions.find((candidate) => candidate.name === name);
+  if (!definition) throw new Error(`Missing MCP contract for ${name}.`);
   return definition;
 }
 
-function getListToolOutputSchema(outputSchema: z.ZodTypeAny) {
-  const schema = toJsonSchemaCompat(outputSchema, {
-    pipeStrategy: 'output',
-    strictUnions: true,
-  });
-
-  if (schema.type === 'object') return schema;
-  if (
-    Array.isArray(schema.anyOf) &&
-    schema.anyOf.length > 0 &&
-    schema.anyOf.every(
-      (candidate) =>
-        typeof candidate === 'object' && candidate !== null && candidate.type === 'object'
-    )
-  ) {
-    return { ...schema, type: 'object' };
-  }
-  return undefined;
+function canonicalToolDescriptor(name: string) {
+  const tool = privateMcpToolDescriptors.find((candidate) => candidate.name === name);
+  if (!tool) throw new Error(`Missing MCP contract for ${name}.`);
+  return tool;
 }
 
-export function registerWarmTools(
-  server: McpServer,
-  options: WarmApiClientOptions = {},
-  mode: WarmServerMode = 'context'
-): void {
-  const client = createWarmApiClient({ ...options, audience: mode });
-  const contextTools: WarmToolDefinition[] = [
+function mcpOutputSchema(name: string) {
+  const outputSchema = canonicalToolDescriptor(name).output_schema;
+  return 'type' in outputSchema && outputSchema.type === 'object'
+    ? outputSchema
+    : { ...outputSchema, type: 'object' };
+}
+
+function readToolDefinitions(client: ReadOnlyWarmApiClient): WarmToolDefinition[] {
+  return [
     {
-      ...getToolDefinition('get_financial_context', 'context'),
+      ...descriptor('get_financial_context'),
       handler: async () => await client.getFinancialContext(),
     },
     {
-      ...getToolDefinition('get_transactions', 'context'),
-      handler: async (args) => {
-        return await client.getTransactions(
+      ...descriptor('get_transactions'),
+      handler: async (args) =>
+        await client.getTransactions(
           normalizeGetTransactionsMcpInput(
             args as Parameters<typeof normalizeGetTransactionsMcpInput>[0]
           )
-        );
-      },
-    },
-    {
-      ...getToolDefinition('verify_key', 'context'),
-      handler: async () => await client.validateAudience(),
+        ),
     },
   ];
-  const automationTools: WarmToolDefinition[] = [
+}
+
+function automationToolDefinitions(client: WarmApiClient): WarmToolDefinition[] {
+  return [
     {
-      ...getToolDefinition('search_operations', 'automation'),
+      ...descriptor('search_operations'),
       handler: async (args) =>
         await client.searchOperations(typeof args.query === 'string' ? args.query : undefined),
     },
     {
-      ...getToolDefinition('describe_operation', 'automation'),
+      ...descriptor('describe_operation'),
       handler: async (args) =>
         await client.describeOperation(
           args.operation_id as string,
-          args.input as Parameters<typeof client.describeOperation>[1]
+          args.input as Parameters<WarmApiClient['describeOperation']>[1]
         ),
     },
     {
-      ...getToolDefinition('invoke_operation', 'automation'),
+      ...descriptor('invoke_operation'),
       handler: async (args) =>
         await client.invokeOperation(
           args.operation_id as string,
-          args.input as Parameters<typeof client.invokeOperation>[1],
+          args.input as Parameters<WarmApiClient['invokeOperation']>[1],
           typeof args.approval_id === 'string' ? args.approval_id : undefined
         ),
     },
   ];
-  const tools = mode === 'automation' ? automationTools : contextTools;
+}
 
-  server.server.registerCapabilities({
-    tools: {
-      listChanged: true,
-    },
-  });
-
+function registerTools(server: McpServer, tools: WarmToolDefinition[]): void {
+  server.server.registerCapabilities({ tools: { listChanged: true } });
   server.server.setRequestHandler(ListToolsRequestSchema, () => ({
-    tools: tools.map((tool) => {
-      const outputSchema = getListToolOutputSchema(tool.outputSchema);
-      return {
-        description: tool.description,
-        annotations: tool.annotations,
-        inputSchema: toJsonSchemaCompat(z.object(tool.inputShape).strict(), {
-          pipeStrategy: 'input',
-          strictUnions: true,
-        }),
-        ...(outputSchema ? { outputSchema } : {}),
-        name: tool.name,
-      };
-    }),
+    tools: tools.map((tool) => ({
+      annotations: tool.annotations,
+      description: tool.description,
+      inputSchema: toJsonSchemaCompat(z.object(tool.inputShape).strict(), {
+        pipeStrategy: 'input',
+        strictUnions: true,
+      }),
+      outputSchema: mcpOutputSchema(tool.name),
+      name: tool.name,
+    })),
   }));
-
   server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const tool = tools.find((candidate) => candidate.name === request.params.name);
-    if (!tool) {
-      throw new McpError(ErrorCode.InvalidParams, `Tool ${request.params.name} not found`);
-    }
-
-    const argsSchema = z.object(tool.inputShape).strict();
-    const parseResult = await argsSchema.safeParseAsync(request.params.arguments ?? {});
-    if (!parseResult.success) {
+    if (!tool) throw new McpError(ErrorCode.InvalidParams, `Tool ${request.params.name} not found`);
+    const parsed = await z
+      .object(tool.inputShape)
+      .strict()
+      .safeParseAsync(request.params.arguments ?? {});
+    if (!parsed.success)
       throw new McpError(
         ErrorCode.InvalidParams,
-        `Invalid arguments for tool ${request.params.name}: ${parseResult.error.message}`
+        `Invalid arguments for tool ${tool.name}: ${parsed.error.message}`
       );
-    }
     if (tool.name === 'get_transactions') {
-      const transactionInput = await getTransactionsMcpInputSchema.safeParseAsync(parseResult.data);
-      if (!transactionInput.success) {
+      const transactionInput = await getTransactionsMcpInputSchema.safeParseAsync(parsed.data);
+      if (!transactionInput.success)
         throw new McpError(
           ErrorCode.InvalidParams,
-          `Invalid arguments for tool ${request.params.name}: ${transactionInput.error.message}`
+          `Invalid arguments for tool ${tool.name}: ${transactionInput.error.message}`
         );
-      }
     }
-
     try {
-      if (tool.name !== 'verify_key') {
-        await client.validateAudience();
-      }
-
-      const result = await tool.handler(parseResult.data);
-      const isFailedAutomationOperation =
-        tool.name === 'invoke_operation' &&
-        typeof result.status === 'number' &&
-        result.status >= 400;
-      return createStructuredToolResult(result, isFailedAutomationOperation);
+      const result = await tool.handler(parsed.data);
+      const invokeStatus = (result as { status?: unknown }).status;
+      return structuredResult(
+        result,
+        tool.name === 'invoke_operation' && typeof invokeStatus === 'number' && invokeStatus >= 400
+      );
     } catch (error) {
-      return createToolFailure(error);
+      return toolFailure(error);
     }
   });
 }
 
+/** Full API-key MCP server with read and automation tools. */
 export function createWarmServer(options: WarmServerOptions = {}): McpServer {
-  const { mode = 'context', serverInfo, ...clientOptions } = options;
+  const { serverInfo, ...clientOptions } = options;
   const server = new McpServer(serverInfo || WARM_SERVER_INFO);
-  registerWarmTools(server, clientOptions, mode);
+  const client = createWarmApiClient(clientOptions);
+  registerTools(server, [...readToolDefinitions(client), ...automationToolDefinitions(client)]);
+  return server;
+}
+
+/** JWT-only MCP server for Warm Chat. It never reads or falls back to an API key. */
+export function createReadOnlyWarmServer(options: ReadOnlyWarmServerOptions): McpServer {
+  const { serverInfo, ...clientOptions } = options;
+  const server = new McpServer(serverInfo || WARM_SERVER_INFO);
+  registerTools(server, readToolDefinitions(createReadOnlyWarmApiClient(clientOptions)));
   return server;
 }
