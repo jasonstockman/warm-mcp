@@ -50,7 +50,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jasonstockman/warm-app.git",
+    "url": "https://github.com/jasonstockman/warm-mcp",
     "directory": "libraries/mcp"
   },
   "dependencies": {
