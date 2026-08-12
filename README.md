@@ -1,15 +1,9 @@
-# @warmio/mcp
+# Deprecated: @warmio/mcp
 
-`@warmio/mcp` is Warm's local stdio MCP server. Run the interactive installer to validate and store one full-access `WARM_API_KEY`, then configure detected supported clients:
+This repository is deprecated and read-only.
 
-```sh
-npx -y @warmio/mcp@latest install
-```
+The current source for `@warmio/mcp` is
+[`warm-app/libraries/mcp`](https://github.com/jasonstockman/warm-app/tree/master/libraries/mcp).
+Use the `warm-app` repository for changes and reports.
 
-Each client starts the server with:
-
-```sh
-npx -y @warmio/mcp@latest mcp
-```
-
-The server exposes financial-context read tools plus the automation operation catalog.
+The published package name remains `@warmio/mcp`.
